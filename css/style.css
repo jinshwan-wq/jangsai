@@ -1086,9 +1086,68 @@ textarea.form-input {
 .program-meta-item {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 0.8rem;
+    gap: 8px;
+    font-size: 0.85rem;
     color: var(--text-muted);
+}
+
+/* ==========================================
+   Web App View Styles
+   ========================================== */
+.webapp-container {
+    max-width: 1200px;
+    margin: 20px auto;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+    overflow: hidden;
+    animation: fadeIn 0.4s var(--ease);
+}
+
+.webapp-header {
+    display: flex;
+    align-items: center;
+    padding: 16px 24px;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.webapp-title {
+    margin-left: auto;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.webapp-body {
+    padding: 40px;
+    min-height: 500px;
+}
+
+.webapp-sample {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.webapp-sample h2 {
+    font-size: 1.8rem;
+    color: #fff;
+    margin-bottom: 10px;
+}
+
+.webapp-sample p {
+    color: var(--text-muted);
+    margin-bottom: 30px;
+}
+
+.sample-box {
+    display: inline-flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 30px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .program-meta-item i {

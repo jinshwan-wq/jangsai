@@ -35,6 +35,7 @@ const state = {
     currentView: 'loading',
     codeSent: false,
     phoneValue: '',
+    activeWebApp: null,
     adminTab: 'users',
     adminUsers: [],
     adminPrograms: [],
