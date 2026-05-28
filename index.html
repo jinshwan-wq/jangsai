@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>jangsAI - 프로그램 센터</title>
+    <meta name="description" content="jangsAI 등급별 프로그램 관리 및 배포 시스템">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 로딩 화면 -->
+    <div id="loading-screen">
+        <div class="loader">
+            <div class="loader-logo">jangs<span>AI</span></div>
+            <div class="loader-text">시스템을 불러오는 중...</div>
+            <div class="loader-bar"><div class="loader-bar-fill"></div></div>
+        </div>
+    </div>
+
+    <!-- 토스트 알림 -->
+    <div id="toast-container"></div>
+
+    <!-- 모달 -->
+    <div id="modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)hideModal()">
+        <div id="modal-content" class="modal-content"></div>
+    </div>
+
+    <!-- 앱 컨테이너 -->
+    <div id="app"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
