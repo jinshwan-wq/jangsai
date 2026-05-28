@@ -34,6 +34,7 @@ const state = {
     programs: [],
     currentView: 'loading',
     codeSent: false,
+    phoneValue: '',
     adminTab: 'users',
     adminUsers: [],
     adminPrograms: [],
@@ -137,9 +138,15 @@ async function register(username, password, displayName) {
 }
 
 async function logout() {
-    await sb.auth.signOut();
+    try {
+        await sb.auth.signOut();
+    } catch (e) {
+        console.error(e);
+    }
     state.user = null;
     state.profile = null;
+    state.codeSent = false;
+    state.phoneValue = '';
     navigate('auth');
     showToast('로그아웃 되었습니다', 'info');
 }
@@ -304,13 +311,13 @@ function renderAuthView() {
         <div class="auth-card">
             <div class="auth-header">
                 <div class="auth-logo">jangs<span>AI</span></div>
-                <p class="auth-subtitle">등급별 프로그램 관리 시스템</p>
+                <p class="auth-subtitle">장진환 개발중</p>
             </div>
             <form class="auth-form" onsubmit="handleAuthSubmit(event)" id="auth-form">
                 <div class="form-group">
                     <label class="form-label" for="phone">휴대전화</label>
                     <div class="phone-row">
-                        <input class="form-input phone-input" type="tel" id="phone" placeholder="휴대전화 번호 입력" required autocomplete="tel">
+                        <input class="form-input phone-input" type="tel" id="phone" placeholder="휴대전화 번호 입력" required autocomplete="tel" value="${state.phoneValue}">
                         <button type="button" class="btn-send-code ${state.codeSent ? 'sent' : ''}" onclick="handleSendCode()" id="send-code-btn">
                             ${state.codeSent ? '발송완료' : '인증번호 받기'}
                         </button>
@@ -345,6 +352,7 @@ function handleSendCode() {
         showToast('아이디를 정확히 입력해주세요', 'warning');
         return;
     }
+    state.phoneValue = phone.value;
     state.codeSent = true;
     renderApp();
     // 인증번호 입력칸에 포커스
