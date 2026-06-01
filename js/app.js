@@ -1343,4 +1343,8 @@ async function init() {
 }
 
 // 앱 시작
-document.addEventListener('DOMContentLoaded', init);
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
