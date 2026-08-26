@@ -33,6 +33,7 @@ const state = {
     roles: [],
     programs: [],
     currentView: 'loading',
+    authMode: 'login',
     codeSent: false,
     phoneValue: '',
     activeWebApp: null,
@@ -307,6 +308,7 @@ async function downloadProgram(program) {
 // ==========================================
 
 function renderAuthView() {
+    const isSignup = state.authMode === 'signup';
     return `
     <div class="auth-container">
         <div class="auth-card">
@@ -314,6 +316,17 @@ function renderAuthView() {
                 <div class="auth-logo">jangs<span>AI</span></div>
                 <p class="auth-subtitle">장진환 개발중</p>
             </div>
+            <div class="auth-tabs">
+                <button type="button" class="auth-tab ${!isSignup ? 'active' : ''}" onclick="switchAuthMode('login')" id="auth-tab-login">로그인</button>
+                <button type="button" class="auth-tab ${isSignup ? 'active' : ''}" onclick="switchAuthMode('signup')" id="auth-tab-signup">회원가입</button>
+            </div>
+            ${isSignup ? renderSignupForm() : renderLoginForm()}
+        </div>
+    </div>`;
+}
+
+function renderLoginForm() {
+    return `
             <form class="auth-form" onsubmit="handleAuthSubmit(event)" id="auth-form">
                 <div class="form-group">
                     <label class="form-label" for="phone">휴대전화</label>
@@ -336,9 +349,39 @@ function renderAuthView() {
                 <button type="submit" class="btn-login ${state.codeSent ? '' : 'disabled'}" id="auth-submit-btn" ${state.codeSent ? '' : 'disabled'}>
                     로그인
                 </button>
-            </form>
-        </div>
-    </div>`;
+            </form>`;
+}
+
+function renderSignupForm() {
+    return `
+            <form class="auth-form" onsubmit="handleRegisterSubmit(event)" id="signup-form">
+                <div class="form-group">
+                    <label class="form-label" for="signup-username">아이디 (휴대전화)</label>
+                    <input class="form-input" type="tel" id="signup-username" placeholder="휴대전화 번호 입력" required autocomplete="username" value="${state.phoneValue}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="signup-name">이름 (선택)</label>
+                    <input class="form-input" type="text" id="signup-name" placeholder="표시할 이름" autocomplete="name">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="signup-password">비밀번호</label>
+                    <input class="form-input" type="password" id="signup-password" placeholder="비밀번호 (6자 이상)" required minlength="6" autocomplete="new-password">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="signup-password2">비밀번호 확인</label>
+                    <input class="form-input" type="password" id="signup-password2" placeholder="비밀번호 다시 입력" required minlength="6" autocomplete="new-password">
+                </div>
+                <button type="submit" class="btn-login" id="signup-submit-btn">
+                    회원가입
+                </button>
+            </form>`;
+}
+
+function switchAuthMode(mode) {
+    if (state.authMode === mode) return;
+    state.authMode = mode;
+    state.codeSent = false;
+    renderApp();
 }
 
 function handleSendCode() {
@@ -390,6 +433,62 @@ async function handleAuthSubmit(e) {
         }
     } catch (err) {
         showToast('인증번호가 올바르지 않습니다. 다시 확인해주세요.', 'error');
+    } finally {
+        btn.textContent = origText;
+        btn.disabled = false;
+    }
+}
+
+async function handleRegisterSubmit(e) {
+    e.preventDefault();
+
+    const username = $('#signup-username').value.trim().replace(/-/g, '');
+    const displayName = $('#signup-name').value.trim();
+    const password = $('#signup-password').value;
+    const password2 = $('#signup-password2').value;
+
+    if (!username || !password) {
+        showToast('아이디와 비밀번호를 입력해주세요', 'warning');
+        return;
+    }
+    if (username.length < 3) {
+        showToast('아이디를 정확히 입력해주세요', 'warning');
+        return;
+    }
+    if (password.length < 6) {
+        showToast('비밀번호는 6자 이상이어야 합니다', 'warning');
+        return;
+    }
+    if (password !== password2) {
+        showToast('비밀번호가 일치하지 않습니다', 'warning');
+        return;
+    }
+
+    const btn = $('#signup-submit-btn');
+    const origText = btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span>';
+    btn.disabled = true;
+
+    try {
+        const data = await register(username, password, displayName);
+
+        // 이메일 확인이 꺼져 있으면 가입 즉시 세션이 생성됨 → 자동 로그인
+        if (data && data.session) {
+            state.user = data.session.user;
+            await loadProfile();
+            await loadRoles();
+            showToast('회원가입 완료! 자동 로그인되었습니다.', 'success');
+            state.authMode = 'login';
+            navigate('dashboard');
+        } else {
+            showToast('회원가입이 완료되었습니다. 로그인해주세요.', 'success');
+            state.phoneValue = username;
+            state.authMode = 'login';
+            state.codeSent = false;
+            renderApp();
+        }
+    } catch (err) {
+        showToast(err.message || '회원가입에 실패했습니다', 'error');
     } finally {
         btn.textContent = origText;
         btn.disabled = false;
