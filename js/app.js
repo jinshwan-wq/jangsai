@@ -7,6 +7,7 @@ const SUPABASE_URL = 'https://pfmrqsfmkdnhzjimqocr.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_MTmIgPL7ilgjlb1tC92Mng_WExurSRL';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const EMAIL_DOMAIN = '@jangsai.local';
+const OWNER_EMAIL = 'kher2000@jangsai.local';
 
 // --- 등급별 색상 ---
 const ROLE_COLORS = {
@@ -159,9 +160,29 @@ async function logout() {
 async function loadProfile() {
     if (!state.user) return null;
     const { data, error } = await sb.from('profiles').select('*').eq('id', state.user.id).single();
-    if (error) { console.error('프로필 로드 실패:', error); return null; }
-    state.profile = data;
-    return data;
+    if (error) {
+        console.error('프로필 로드 실패:', error);
+        if (!isOwnerUser()) return null;
+        state.profile = createOwnerProfile();
+        return state.profile;
+    }
+    state.profile = isOwnerUser() ? { ...data, role_id: 'admin', approval_status: 'approved' } : data;
+    return state.profile;
+}
+
+function isOwnerUser(user = state.user) {
+    return user?.email?.toLowerCase() === OWNER_EMAIL;
+}
+
+function createOwnerProfile() {
+    return {
+        id: state.user?.id,
+        username: 'kher2000',
+        display_name: state.user?.user_metadata?.display_name || '최고 관리자',
+        role_id: 'admin',
+        approval_status: 'approved',
+        created_at: state.user?.created_at,
+    };
 }
 
 function getApprovalStatus(profile) {
@@ -169,7 +190,7 @@ function getApprovalStatus(profile) {
 }
 
 function isProfileApproved(profile) {
-    return getApprovalStatus(profile) === 'approved';
+    return isOwnerUser() || getApprovalStatus(profile) === 'approved';
 }
 
 // ==========================================
@@ -460,7 +481,6 @@ async function handleAuthSubmit(e) {
         }
 
         await login(phone, code);
-        showToast('로그인 성공!', 'success');
 
         const { data: { session } } = await sb.auth.getSession();
         if (session) {
@@ -478,7 +498,8 @@ async function handleAuthSubmit(e) {
             }
             await loadRoles();
             state.codeSent = false;
-            navigate('dashboard');
+            await navigate('dashboard');
+            showToast('로그인 성공!', 'success');
         }
     } catch (err) {
         const knownMessage = err.message?.includes('승인') ? err.message : '인증번호가 올바르지 않습니다. 다시 확인해주세요.';
