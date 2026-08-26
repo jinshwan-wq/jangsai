@@ -26,6 +26,13 @@ const CATEGORY_ICONS = {
     '데이터': 'ri-database-2-line',
 };
 
+const DEFAULT_MARKETING_PRODUCTS = [
+    { id: 'gala431', brand: '이너리움', name: '갈라431', slug: 'innerium-gala431', sort_order: 1 },
+    { id: 'minti431', brand: '이너리움', name: '민티431', slug: 'innerium-minti431', sort_order: 2 },
+    { id: 'tonggam-cream', brand: '유랄', name: '통감크림', slug: 'yural-tonggam-cream', sort_order: 3 },
+    { id: 'myeongga-bonhwan', brand: '유랄', name: '명가본환', slug: 'yural-myeongga-bonhwan', sort_order: 4 },
+];
+
 // --- 앱 상태 ---
 const state = {
     user: null,
@@ -45,6 +52,11 @@ const state = {
     adminPrograms: [],
     searchQuery: '',
     categoryFilter: 'all',
+    marketingProducts: [],
+    marketingMetrics: [],
+    selectedMarketingProduct: 'all',
+    marketingRange: 7,
+    marketingDataReady: true,
 };
 
 // ==========================================
@@ -172,6 +184,10 @@ function isProfileApproved(profile) {
     return getApprovalStatus(profile) === 'approved';
 }
 
+function isInternalUser() {
+    return ['admin', 'employee'].includes(state.profile?.role_id);
+}
+
 // ==========================================
 // 데이터 로드
 // ==========================================
@@ -189,6 +205,29 @@ async function loadPrograms() {
         ...p,
         allowedRoles: (p.program_roles || []).map(pr => pr.role_id)
     }));
+}
+
+async function loadMarketingData() {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+    const dateFrom = startDate.toISOString().slice(0, 10);
+
+    const [{ data: products, error: productError }, { data: metrics, error: metricError }] = await Promise.all([
+        sb.from('marketing_products').select('*').eq('is_active', true).order('sort_order'),
+        sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
+    ]);
+
+    if (productError || metricError) {
+        console.warn('마케팅 데이터 테이블 준비 전:', productError || metricError);
+        state.marketingProducts = DEFAULT_MARKETING_PRODUCTS;
+        state.marketingMetrics = [];
+        state.marketingDataReady = false;
+        return;
+    }
+
+    state.marketingProducts = products?.length ? products : DEFAULT_MARKETING_PRODUCTS;
+    state.marketingMetrics = metrics || [];
+    state.marketingDataReady = true;
 }
 
 async function loadAdminUsers() {
@@ -547,17 +586,22 @@ async function handleRegisterSubmit(e) {
 
 function renderNavbar() {
     const isAdmin = state.profile?.role_id === 'admin';
+    const isInternal = isInternalUser();
     const initial = (state.profile?.display_name || state.profile?.username || '?')[0].toUpperCase();
     return `
     <nav class="navbar">
         <div class="navbar-brand" onclick="navigate('dashboard')">jangs<span>AI</span></div>
         <div class="navbar-right">
+            ${isInternal ? `
+            <button class="btn btn-sm ${state.currentView === 'dashboard' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('dashboard')" id="nav-marketing-btn">
+                <i class="ri-line-chart-line"></i> 마케팅 지표
+            </button>
+            <button class="btn btn-sm ${state.currentView === 'programs' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('programs')" id="nav-programs-btn">
+                <i class="ri-apps-line"></i> 프로그램
+            </button>` : ''}
             ${isAdmin ? `
             <button class="btn btn-sm ${state.currentView === 'admin' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('admin')" id="nav-admin-btn">
                 <i class="ri-settings-3-line"></i> 관리자
-            </button>
-            <button class="btn btn-sm ${state.currentView === 'dashboard' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('dashboard')" id="nav-dashboard-btn">
-                <i class="ri-apps-line"></i> 프로그램
             </button>` : ''}
             <div class="navbar-user">
                 <div class="navbar-avatar">${escapeHtml(initial)}</div>
@@ -572,7 +616,319 @@ function renderNavbar() {
 }
 
 // ==========================================
-// 뷰 렌더링 - 대시보드 (프로그램 목록)
+// 뷰 렌더링 - 회사 내부 마케팅 대시보드
+// ==========================================
+
+function metricNumber(value) {
+    return Number(value) || 0;
+}
+
+function formatMetric(value) {
+    return new Intl.NumberFormat('ko-KR').format(Math.round(metricNumber(value)));
+}
+
+function formatWon(value) {
+    return `${new Intl.NumberFormat('ko-KR').format(Math.round(metricNumber(value)))}원`;
+}
+
+function getMetricSales(metric) {
+    return metricNumber(metric?.cafe24_orders) + metricNumber(metric?.coupang_orders) + metricNumber(metric?.smartstore_orders);
+}
+
+function getMetricRevenue(metric) {
+    return metricNumber(metric?.cafe24_revenue) + metricNumber(metric?.coupang_revenue) + metricNumber(metric?.smartstore_revenue);
+}
+
+function getVisibleMarketingMetrics() {
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - state.marketingRange + 1);
+    const cutoffString = cutoff.toISOString().slice(0, 10);
+
+    return state.marketingMetrics.filter(metric =>
+        metric.metric_date >= cutoffString &&
+        (state.selectedMarketingProduct === 'all' || metric.product_id === state.selectedMarketingProduct)
+    );
+}
+
+function aggregateMarketingMetrics(metrics) {
+    return metrics.reduce((total, metric) => {
+        total.content_views += metricNumber(metric.content_views);
+        total.keyword_search_volume += metricNumber(metric.keyword_search_volume);
+        total.site_visits += metricNumber(metric.site_visits);
+        total.orders += getMetricSales(metric);
+        total.revenue += getMetricRevenue(metric);
+        total.ad_spend += metricNumber(metric.ad_spend);
+        return total;
+    }, { content_views: 0, keyword_search_volume: 0, site_visits: 0, orders: 0, revenue: 0, ad_spend: 0 });
+}
+
+function percent(numerator, denominator) {
+    return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
+
+function renderMarketingDiagnosis(total) {
+    if (!total.content_views && !total.keyword_search_volume && !total.site_visits && !total.orders) {
+        return `
+        <div class="diagnosis-item neutral">
+            <i class="ri-information-line"></i>
+            <div><strong>아직 기록된 데이터가 없습니다</strong><span>첫 데이터를 입력하면 지표별 이상 원인을 자동으로 안내합니다.</span></div>
+        </div>`;
+    }
+
+    const exposureToVisit = percent(total.site_visits, total.content_views);
+    const searchToVisit = percent(total.site_visits, total.keyword_search_volume);
+    const conversion = percent(total.orders, total.site_visits);
+    const diagnoses = [];
+
+    if (total.content_views === 0) diagnoses.push(['danger', 'ri-file-warning-line', '콘텐츠 노출 확인 필요', '발행 글 또는 카페 게시물 조회 데이터가 없습니다. 게시물·계정 노출 상태를 확인하세요.']);
+    else if (exposureToVisit < 10) diagnoses.push(['warning', 'ri-route-line', '노출 대비 유입이 낮습니다', `현재 ${exposureToVisit.toFixed(1)}%입니다. 원고 설득력, 링크 위치와 CTA를 점검하세요.`]);
+    else diagnoses.push(['good', 'ri-check-line', '노출→유입 흐름이 양호합니다', `현재 ${exposureToVisit.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
+
+    if (total.keyword_search_volume > 0 && searchToVisit < 10) diagnoses.push(['warning', 'ri-search-eye-line', '검색 대비 자사몰 유입이 낮습니다', '브랜드 검색 결과 구성, 자사몰 링크와 키워드 인테리어를 확인하세요.']);
+    if (total.site_visits > 0 && conversion < 10) diagnoses.push(['warning', 'ri-shopping-cart-line', '유입 대비 구매 전환이 낮습니다', `현재 ${conversion.toFixed(1)}%입니다. 리뷰, 상세페이지, 가격 및 경쟁사 변화를 확인하세요.`]);
+    else if (total.orders > 0) diagnoses.push(['good', 'ri-shopping-bag-3-line', '구매 전환이 기준 이상입니다', `현재 ${conversion.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
+
+    return diagnoses.map(([type, icon, title, description]) => `
+        <div class="diagnosis-item ${type}">
+            <i class="${icon}"></i>
+            <div><strong>${title}</strong><span>${description}</span></div>
+        </div>`).join('');
+}
+
+function renderProductMetricCard(product) {
+    const metrics = state.marketingMetrics
+        .filter(metric => metric.product_id === product.id)
+        .sort((a, b) => b.metric_date.localeCompare(a.metric_date));
+    const latest = metrics[0];
+    const title = `${product.brand} ${product.name}`;
+
+    return `
+    <button class="metric-product-card ${state.selectedMarketingProduct === product.id ? 'active' : ''}"
+        onclick="selectMarketingProduct('${product.id}')">
+        <div class="metric-product-heading">
+            <span class="metric-product-brand">${escapeHtml(product.brand)}</span>
+            <i class="ri-arrow-right-up-line"></i>
+        </div>
+        <h3>${escapeHtml(product.name)}</h3>
+        ${latest ? `
+        <div class="metric-product-summary">
+            <span><small>검색량</small><strong>${formatMetric(latest.keyword_search_volume)}</strong></span>
+            <span><small>유입</small><strong>${formatMetric(latest.site_visits)}</strong></span>
+            <span><small>판매</small><strong>${formatMetric(getMetricSales(latest))}</strong></span>
+        </div>
+        <p>${formatDate(latest.metric_date)} · ${formatWon(getMetricRevenue(latest))}</p>` : `
+        <div class="metric-product-empty"><i class="ri-database-2-line"></i> 첫 기록을 기다리고 있습니다</div>`}
+        <span class="sr-only">${escapeHtml(title)} 선택</span>
+    </button>`;
+}
+
+function renderMarketingDailyTable(metrics) {
+    const grouped = new Map();
+    metrics.forEach(metric => {
+        if (!grouped.has(metric.metric_date)) grouped.set(metric.metric_date, []);
+        grouped.get(metric.metric_date).push(metric);
+    });
+    const rows = [...grouped.entries()].sort(([a], [b]) => b.localeCompare(a));
+
+    if (!rows.length) return `<div class="marketing-empty-row">선택한 기간에 기록된 데이터가 없습니다.</div>`;
+
+    return `
+    <div class="marketing-table-wrap">
+        <table class="marketing-table">
+            <thead><tr><th>날짜</th><th>콘텐츠 노출</th><th>브랜드 검색</th><th>자사몰 유입</th><th>판매</th><th>매출</th><th>광고비</th><th>전환율</th></tr></thead>
+            <tbody>
+            ${rows.map(([date, dayMetrics]) => {
+                const day = aggregateMarketingMetrics(dayMetrics);
+                return `<tr>
+                    <td><strong>${formatDate(date)}</strong></td>
+                    <td>${formatMetric(day.content_views)}</td>
+                    <td>${formatMetric(day.keyword_search_volume)}</td>
+                    <td>${formatMetric(day.site_visits)}</td>
+                    <td>${formatMetric(day.orders)}</td>
+                    <td>${formatWon(day.revenue)}</td>
+                    <td>${formatWon(day.ad_spend)}</td>
+                    <td>${percent(day.orders, day.site_visits).toFixed(1)}%</td>
+                </tr>`;
+            }).join('')}
+            </tbody>
+        </table>
+    </div>`;
+}
+
+function renderInternalDashboardView() {
+    const metrics = getVisibleMarketingMetrics();
+    const total = aggregateMarketingMetrics(metrics);
+    const exposureToVisit = percent(total.site_visits, total.content_views);
+    const conversion = percent(total.orders, total.site_visits);
+    const roas = percent(total.revenue, total.ad_spend);
+    const tenTenIndex = total.content_views > 0
+        ? Math.round((Math.min(exposureToVisit / 10, 2) + Math.min(conversion / 10, 2)) * 50)
+        : 0;
+
+    return `
+    ${renderNavbar()}
+    <main class="internal-dashboard">
+        <section class="internal-hero">
+            <div>
+                <span class="eyebrow"><i class="ri-pulse-line"></i> COMPANY INSIGHT</span>
+                <h1>마케팅 흐름을 <span>한눈에</span></h1>
+                <p>노출부터 검색, 유입, 판매까지 매일 같은 기준으로 확인합니다.</p>
+            </div>
+            <div class="internal-actions">
+                <span class="sync-status ${state.marketingDataReady ? '' : 'waiting'}">
+                    <i class="${state.marketingDataReady ? 'ri-checkbox-circle-line' : 'ri-time-line'}"></i>
+                    ${state.marketingDataReady ? '데이터 연결됨' : 'DB 설정 필요'}
+                </span>
+                <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 일일 데이터 입력</button>
+            </div>
+        </section>
+
+        <section class="marketing-toolbar">
+            <div class="marketing-product-filter">
+                <button class="${state.selectedMarketingProduct === 'all' ? 'active' : ''}" onclick="selectMarketingProduct('all')">전체 제품</button>
+                ${state.marketingProducts.map(product => `
+                    <button class="${state.selectedMarketingProduct === product.id ? 'active' : ''}" onclick="selectMarketingProduct('${product.id}')">${escapeHtml(product.name)}</button>
+                `).join('')}
+            </div>
+            <select class="filter-select" onchange="changeMarketingRange(this.value)">
+                <option value="7" ${state.marketingRange === 7 ? 'selected' : ''}>최근 7일</option>
+                <option value="14" ${state.marketingRange === 14 ? 'selected' : ''}>최근 14일</option>
+                <option value="30" ${state.marketingRange === 30 ? 'selected' : ''}>최근 30일</option>
+            </select>
+        </section>
+
+        <section class="funnel-panel">
+            <div class="funnel-heading">
+                <div><span>10·10 FUNNEL</span><h2>노출에서 구매까지</h2></div>
+                <div class="ten-ten-index"><small>장스 지수</small><strong>${tenTenIndex}</strong><span>/ 100</span></div>
+            </div>
+            <div class="funnel-flow">
+                <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${formatMetric(total.content_views)}</strong><small>블로그·카페 조회</small></div>
+                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${exposureToVisit.toFixed(1)}%</b></div>
+                <div class="funnel-step search"><i class="ri-search-line"></i><span>브랜드 검색</span><strong>${formatMetric(total.keyword_search_volume)}</strong><small>핵심 키워드 검색</small></div>
+                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${percent(total.site_visits, total.keyword_search_volume).toFixed(1)}%</b></div>
+                <div class="funnel-step visit"><i class="ri-home-4-line"></i><span>자사몰 유입</span><strong>${formatMetric(total.site_visits)}</strong><small>카페24 방문</small></div>
+                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${conversion.toFixed(1)}%</b></div>
+                <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>구매</span><strong>${formatMetric(total.orders)}건</strong><small>${formatWon(total.revenue)}</small></div>
+            </div>
+        </section>
+
+        <section class="marketing-kpis">
+            <div class="marketing-kpi"><span>총 매출</span><strong>${formatWon(total.revenue)}</strong><small>카페24·쿠팡·스마트스토어</small></div>
+            <div class="marketing-kpi"><span>광고비</span><strong>${formatWon(total.ad_spend)}</strong><small>선택 기간 합계</small></div>
+            <div class="marketing-kpi"><span>ROAS</span><strong>${roas.toFixed(0)}%</strong><small>매출 ÷ 광고비</small></div>
+            <div class="marketing-kpi accent"><span>구매 전환율</span><strong>${conversion.toFixed(1)}%</strong><small>목표 10%</small></div>
+        </section>
+
+        <section class="metric-product-grid">
+            ${state.marketingProducts.map(renderProductMetricCard).join('')}
+        </section>
+
+        <section class="marketing-bottom-grid">
+            <div class="marketing-section-card">
+                <div class="marketing-section-title"><div><span>DAILY RECORD</span><h2>일자별 기록</h2></div><i class="ri-calendar-check-line"></i></div>
+                ${renderMarketingDailyTable(metrics)}
+            </div>
+            <div class="marketing-section-card diagnosis-card">
+                <div class="marketing-section-title"><div><span>CHECK POINT</span><h2>오늘의 진단</h2></div><i class="ri-stethoscope-line"></i></div>
+                <div class="diagnosis-list">${renderMarketingDiagnosis(total)}</div>
+            </div>
+        </section>
+    </main>`;
+}
+
+function selectMarketingProduct(productId) {
+    state.selectedMarketingProduct = productId;
+    renderApp();
+}
+
+function changeMarketingRange(value) {
+    state.marketingRange = Number(value) || 7;
+    renderApp();
+}
+
+function showDailyMetricModal() {
+    if (!state.marketingDataReady) {
+        showToast('먼저 마케팅 DB 마이그레이션을 적용해주세요', 'warning');
+        return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const selected = state.selectedMarketingProduct === 'all' ? state.marketingProducts[0]?.id : state.selectedMarketingProduct;
+    showModal(`
+        <div class="modal-header">
+            <h3>일일 마케팅 데이터 입력</h3>
+            <button class="modal-close" onclick="hideModal()"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="modal-body">
+            <form onsubmit="handleDailyMetricSubmit(event)">
+                <div class="form-row">
+                    <div class="form-group"><label class="form-label">제품</label><select class="form-input" id="metric-product" required>
+                        ${state.marketingProducts.map(product => `<option value="${product.id}" ${product.id === selected ? 'selected' : ''}>${escapeHtml(product.brand)} ${escapeHtml(product.name)}</option>`).join('')}
+                    </select></div>
+                    <div class="form-group"><label class="form-label">기준일</label><input class="form-input" type="date" id="metric-date" value="${today}" required></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label class="form-label">콘텐츠 조회·노출</label><input class="form-input" type="number" id="metric-content-views" min="0" value="0"></div>
+                    <div class="form-group"><label class="form-label">브랜드 검색량</label><input class="form-input" type="number" id="metric-search" min="0" value="0"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label class="form-label">자사몰 유입</label><input class="form-input" type="number" id="metric-visits" min="0" value="0"></div>
+                    <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" value="0"></div>
+                </div>
+                <div class="channel-entry-grid">
+                    ${['cafe24', 'coupang', 'smartstore'].map((channel, index) => `
+                    <div class="channel-entry">
+                        <strong>${['카페24', '쿠팡', '스마트스토어'][index]}</strong>
+                        <input class="form-input" type="number" id="metric-${channel}-orders" min="0" value="0" placeholder="판매량">
+                        <input class="form-input" type="number" id="metric-${channel}-revenue" min="0" value="0" placeholder="매출">
+                    </div>`).join('')}
+                </div>
+                <button type="submit" class="btn btn-primary btn-block mt-3" id="metric-submit"><i class="ri-save-line"></i> 저장하기</button>
+            </form>
+        </div>`);
+}
+
+async function handleDailyMetricSubmit(event) {
+    event.preventDefault();
+    const button = $('#metric-submit');
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span> 저장 중...';
+    const value = id => metricNumber($(`#${id}`)?.value);
+
+    const record = {
+        product_id: $('#metric-product').value,
+        metric_date: $('#metric-date').value,
+        content_views: value('metric-content-views'),
+        keyword_search_volume: value('metric-search'),
+        site_visits: value('metric-visits'),
+        ad_spend: value('metric-ad-spend'),
+        cafe24_orders: value('metric-cafe24-orders'),
+        cafe24_revenue: value('metric-cafe24-revenue'),
+        coupang_orders: value('metric-coupang-orders'),
+        coupang_revenue: value('metric-coupang-revenue'),
+        smartstore_orders: value('metric-smartstore-orders'),
+        smartstore_revenue: value('metric-smartstore-revenue'),
+        source: 'manual',
+        created_by: state.user.id,
+        updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await sb.from('daily_marketing_metrics').upsert(record, { onConflict: 'product_id,metric_date' });
+    if (error) {
+        showToast('저장 실패: ' + error.message, 'error');
+        button.disabled = false;
+        button.innerHTML = '<i class="ri-save-line"></i> 저장하기';
+        return;
+    }
+    hideModal();
+    await loadMarketingData();
+    renderApp();
+    showToast('일일 데이터가 저장되었습니다', 'success');
+}
+
+// ==========================================
+// 뷰 렌더링 - 수강생 프로그램 목록
 // ==========================================
 
 function renderDashboardView() {
@@ -1489,6 +1845,13 @@ async function navigate(view) {
 
     if (view === 'dashboard') {
         await loadRoles();
+        if (isInternalUser()) await loadMarketingData();
+        else await loadPrograms();
+    } else if (view === 'programs') {
+        if (!isInternalUser()) {
+            navigate('dashboard');
+            return;
+        }
         await loadPrograms();
     } else if (view === 'admin') {
         if (state.profile?.role_id !== 'admin') {
@@ -1513,6 +1876,9 @@ function renderApp() {
             app.innerHTML = renderAuthView();
             break;
         case 'dashboard':
+            app.innerHTML = isInternalUser() ? renderInternalDashboardView() : renderDashboardView();
+            break;
+        case 'programs':
             app.innerHTML = renderDashboardView();
             break;
         case 'admin':
