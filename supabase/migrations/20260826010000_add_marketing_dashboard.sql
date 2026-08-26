@@ -21,6 +21,8 @@ create table if not exists public.daily_marketing_metrics (
     content_posts_count integer not null default 0 check (content_posts_count >= 0),
     keyword_search_volume integer not null default 0 check (keyword_search_volume >= 0),
     site_visits integer not null default 0 check (site_visits >= 0),
+    tracked_visits integer not null default 0 check (tracked_visits >= 0),
+    tracked_orders integer not null default 0 check (tracked_orders >= 0),
     cafe24_orders integer not null default 0 check (cafe24_orders >= 0),
     cafe24_revenue bigint not null default 0 check (cafe24_revenue >= 0),
     coupang_orders integer not null default 0 check (coupang_orders >= 0),
@@ -35,6 +37,10 @@ create table if not exists public.daily_marketing_metrics (
     updated_at timestamptz not null default now(),
     unique (product_id, metric_date)
 );
+
+alter table public.daily_marketing_metrics
+    add column if not exists tracked_visits integer not null default 0 check (tracked_visits >= 0),
+    add column if not exists tracked_orders integer not null default 0 check (tracked_orders >= 0);
 
 create table if not exists public.marketing_contents (
     id uuid primary key default gen_random_uuid(),

@@ -656,11 +656,13 @@ function aggregateMarketingMetrics(metrics) {
         total.content_views += metricNumber(metric.content_views);
         total.keyword_search_volume += metricNumber(metric.keyword_search_volume);
         total.site_visits += metricNumber(metric.site_visits);
+        total.tracked_visits += metricNumber(metric.tracked_visits);
+        total.tracked_orders += metricNumber(metric.tracked_orders);
         total.orders += getMetricSales(metric);
         total.revenue += getMetricRevenue(metric);
         total.ad_spend += metricNumber(metric.ad_spend);
         return total;
-    }, { content_views: 0, keyword_search_volume: 0, site_visits: 0, orders: 0, revenue: 0, ad_spend: 0 });
+    }, { content_views: 0, keyword_search_volume: 0, site_visits: 0, tracked_visits: 0, tracked_orders: 0, orders: 0, revenue: 0, ad_spend: 0 });
 }
 
 function percent(numerator, denominator) {
@@ -676,18 +678,17 @@ function renderMarketingDiagnosis(total) {
         </div>`;
     }
 
-    const exposureToVisit = percent(total.site_visits, total.content_views);
-    const searchToVisit = percent(total.site_visits, total.keyword_search_volume);
-    const conversion = percent(total.orders, total.site_visits);
+    const exposureToVisit = percent(total.tracked_visits, total.content_views);
+    const conversion = percent(total.tracked_orders, total.tracked_visits);
     const diagnoses = [];
 
     if (total.content_views === 0) diagnoses.push(['danger', 'ri-file-warning-line', '콘텐츠 노출 확인 필요', '발행 글 또는 카페 게시물 조회 데이터가 없습니다. 게시물·계정 노출 상태를 확인하세요.']);
     else if (exposureToVisit < 10) diagnoses.push(['warning', 'ri-route-line', '노출 대비 유입이 낮습니다', `현재 ${exposureToVisit.toFixed(1)}%입니다. 원고 설득력, 링크 위치와 CTA를 점검하세요.`]);
     else diagnoses.push(['good', 'ri-check-line', '노출→유입 흐름이 양호합니다', `현재 ${exposureToVisit.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
 
-    if (total.keyword_search_volume > 0 && searchToVisit < 10) diagnoses.push(['warning', 'ri-search-eye-line', '검색 대비 자사몰 유입이 낮습니다', '브랜드 검색 결과 구성, 자사몰 링크와 키워드 인테리어를 확인하세요.']);
-    if (total.site_visits > 0 && conversion < 10) diagnoses.push(['warning', 'ri-shopping-cart-line', '유입 대비 구매 전환이 낮습니다', `현재 ${conversion.toFixed(1)}%입니다. 리뷰, 상세페이지, 가격 및 경쟁사 변화를 확인하세요.`]);
-    else if (total.orders > 0) diagnoses.push(['good', 'ri-shopping-bag-3-line', '구매 전환이 기준 이상입니다', `현재 ${conversion.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
+    if (total.keyword_search_volume === 0) diagnoses.push(['neutral', 'ri-search-eye-line', '브랜드 검색 관심 데이터가 없습니다', '검색량 또는 검색지수를 연결하면 콘텐츠 노출과 관심도의 동반 추세를 확인할 수 있습니다.']);
+    if (total.tracked_visits > 0 && conversion < 10) diagnoses.push(['warning', 'ri-shopping-cart-line', '추적 유입 대비 구매 전환이 낮습니다', `현재 ${conversion.toFixed(1)}%입니다. 리뷰, 상세페이지, 가격 및 경쟁사 변화를 확인하세요.`]);
+    else if (total.tracked_orders > 0) diagnoses.push(['good', 'ri-shopping-bag-3-line', '추적 구매 전환이 기준 이상입니다', `현재 ${conversion.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
 
     return diagnoses.map(([type, icon, title, description]) => `
         <div class="diagnosis-item ${type}">
@@ -736,7 +737,7 @@ function renderMarketingDailyTable(metrics) {
     return `
     <div class="marketing-table-wrap">
         <table class="marketing-table">
-            <thead><tr><th>날짜</th><th>콘텐츠 노출</th><th>브랜드 검색</th><th>자사몰 유입</th><th>판매</th><th>매출</th><th>광고비</th><th>전환율</th></tr></thead>
+            <thead><tr><th>날짜</th><th>콘텐츠 노출</th><th>브랜드 검색</th><th>UTM 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>추적 전환율</th></tr></thead>
             <tbody>
             ${rows.map(([date, dayMetrics]) => {
                 const day = aggregateMarketingMetrics(dayMetrics);
@@ -744,11 +745,11 @@ function renderMarketingDailyTable(metrics) {
                     <td><strong>${formatDate(date)}</strong></td>
                     <td>${formatMetric(day.content_views)}</td>
                     <td>${formatMetric(day.keyword_search_volume)}</td>
-                    <td>${formatMetric(day.site_visits)}</td>
+                    <td>${formatMetric(day.tracked_visits)}</td>
                     <td>${formatMetric(day.orders)}</td>
                     <td>${formatWon(day.revenue)}</td>
                     <td>${formatWon(day.ad_spend)}</td>
-                    <td>${percent(day.orders, day.site_visits).toFixed(1)}%</td>
+                    <td>${percent(day.tracked_orders, day.tracked_visits).toFixed(1)}%</td>
                 </tr>`;
             }).join('')}
             </tbody>
@@ -759,8 +760,8 @@ function renderMarketingDailyTable(metrics) {
 function renderInternalDashboardView() {
     const metrics = getVisibleMarketingMetrics();
     const total = aggregateMarketingMetrics(metrics);
-    const exposureToVisit = percent(total.site_visits, total.content_views);
-    const conversion = percent(total.orders, total.site_visits);
+    const exposureToVisit = percent(total.tracked_visits, total.content_views);
+    const conversion = percent(total.tracked_orders, total.tracked_visits);
     const roas = percent(total.revenue, total.ad_spend);
     const tenTenIndex = total.content_views > 0
         ? Math.round((Math.min(exposureToVisit / 10, 2) + Math.min(conversion / 10, 2)) * 50)
@@ -806,15 +807,18 @@ function renderInternalDashboardView() {
             <div class="funnel-flow">
                 <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${formatMetric(total.content_views)}</strong><small>블로그·카페 조회</small></div>
                 <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${exposureToVisit.toFixed(1)}%</b></div>
-                <div class="funnel-step search"><i class="ri-search-line"></i><span>브랜드 검색</span><strong>${formatMetric(total.keyword_search_volume)}</strong><small>핵심 키워드 검색</small></div>
-                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${percent(total.site_visits, total.keyword_search_volume).toFixed(1)}%</b></div>
-                <div class="funnel-step visit"><i class="ri-home-4-line"></i><span>자사몰 유입</span><strong>${formatMetric(total.site_visits)}</strong><small>카페24 방문</small></div>
+                <div class="funnel-step search"><i class="ri-links-line"></i><span>추적 유입</span><strong>${formatMetric(total.tracked_visits)}</strong><small>UTM·전용 링크</small></div>
                 <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${conversion.toFixed(1)}%</b></div>
-                <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>구매</span><strong>${formatMetric(total.orders)}건</strong><small>${formatWon(total.revenue)}</small></div>
+                <div class="funnel-step visit"><i class="ri-shopping-bag-3-line"></i><span>추적 구매</span><strong>${formatMetric(total.tracked_orders)}건</strong><small>캠페인 귀속 구매</small></div>
+                <div class="funnel-rate reference"><i class="ri-more-line"></i><b>참고</b></div>
+                <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>전체 매출</span><strong>${formatWon(total.revenue)}</strong><small>3개 판매채널 합계</small></div>
             </div>
+            <p class="funnel-disclaimer"><i class="ri-information-line"></i> 브랜드 검색량과 전체 채널 매출은 직접 전환으로 단정하지 않고 별도 참고 지표로 봅니다.</p>
         </section>
 
         <section class="marketing-kpis">
+            <div class="marketing-kpi"><span>브랜드 검색 관심</span><strong>${formatMetric(total.keyword_search_volume)}</strong><small>검색량 또는 검색지수</small></div>
+            <div class="marketing-kpi"><span>자사몰 전체 유입</span><strong>${formatMetric(total.site_visits)}</strong><small>추적 여부와 무관한 전체 방문</small></div>
             <div class="marketing-kpi"><span>총 매출</span><strong>${formatWon(total.revenue)}</strong><small>카페24·쿠팡·스마트스토어</small></div>
             <div class="marketing-kpi"><span>광고비</span><strong>${formatWon(total.ad_spend)}</strong><small>선택 기간 합계</small></div>
             <div class="marketing-kpi"><span>ROAS</span><strong>${roas.toFixed(0)}%</strong><small>매출 ÷ 광고비</small></div>
@@ -873,8 +877,12 @@ function showDailyMetricModal() {
                     <div class="form-group"><label class="form-label">브랜드 검색량</label><input class="form-input" type="number" id="metric-search" min="0" value="0"></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label class="form-label">자사몰 유입</label><input class="form-input" type="number" id="metric-visits" min="0" value="0"></div>
+                    <div class="form-group"><label class="form-label">자사몰 전체 유입</label><input class="form-input" type="number" id="metric-visits" min="0" value="0"></div>
                     <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" value="0"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label class="form-label">UTM 추적 유입</label><input class="form-input" type="number" id="metric-tracked-visits" min="0" value="0"><div class="form-hint">10·10 유입률 계산에 사용</div></div>
+                    <div class="form-group"><label class="form-label">UTM 추적 구매</label><input class="form-input" type="number" id="metric-tracked-orders" min="0" value="0"><div class="form-hint">10·10 구매전환율 계산에 사용</div></div>
                 </div>
                 <div class="channel-entry-grid">
                     ${['cafe24', 'coupang', 'smartstore'].map((channel, index) => `
@@ -902,6 +910,8 @@ async function handleDailyMetricSubmit(event) {
         content_views: value('metric-content-views'),
         keyword_search_volume: value('metric-search'),
         site_visits: value('metric-visits'),
+        tracked_visits: value('metric-tracked-visits'),
+        tracked_orders: value('metric-tracked-orders'),
         ad_spend: value('metric-ad-spend'),
         cafe24_orders: value('metric-cafe24-orders'),
         cafe24_revenue: value('metric-cafe24-revenue'),
