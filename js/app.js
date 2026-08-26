@@ -34,6 +34,13 @@ const DEFAULT_MARKETING_PRODUCTS = [
     { id: 'myeongga-bonhwan', brand: '유랄', name: '명가본환', slug: 'yural-myeongga-bonhwan', sort_order: 4 },
 ];
 
+const PRODUCT_KEYWORDS = {
+    'innerium-gala431': ['이너리움 갈라431', '갈라431', '이너리움'],
+    'innerium-minti431': ['이너리움 민티431', '민티431', '이너리움'],
+    'yural-tonggam-cream': ['유랄 통감크림', '통감크림'],
+    'yural-myeongga-bonhwan': ['유랄 명가본환', '명가본환'],
+};
+
 // --- 앱 상태 ---
 const state = {
     user: null,
@@ -57,6 +64,8 @@ const state = {
     marketingMetrics: [],
     selectedMarketingProduct: 'all',
     marketingRange: 7,
+    marketingView: 'report',
+    reportDays: 3,
     marketingDataReady: true,
 };
 
@@ -230,7 +239,7 @@ async function loadPrograms() {
 
 async function loadMarketingData() {
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 30);
+    startDate.setDate(startDate.getDate() - 62);
     const dateFrom = startDate.toISOString().slice(0, 10);
 
     const [{ data: products, error: productError }, { data: metrics, error: metricError }] = await Promise.all([
@@ -778,7 +787,151 @@ function renderMarketingDailyTable(metrics) {
     </div>`;
 }
 
+function localDateString(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function getReportDates(count = state.reportDays) {
+    return Array.from({ length: count }, (_, index) => {
+        const date = new Date();
+        date.setHours(0, 0, 0, 0);
+        date.setDate(date.getDate() - index);
+        return localDateString(date);
+    });
+}
+
+function getReportProduct() {
+    if (state.selectedMarketingProduct !== 'all') {
+        return state.marketingProducts.find(product => product.id === state.selectedMarketingProduct);
+    }
+    return state.marketingProducts[0];
+}
+
+function reportMetricValue(metric, key, formatter = formatMetric) {
+    if (!metric) return '<span class="report-no-data">—</span>';
+    return formatter(metricNumber(metric[key]));
+}
+
+function renderReportRow(label, dates, metricsByDate, valueGetter, options = {}) {
+    return `
+    <tr class="${options.total ? 'report-total-row' : ''}">
+        <th>${options.indent ? '<span class="report-indent">└</span>' : ''}${escapeHtml(label)}</th>
+        ${dates.map(date => `<td>${valueGetter(metricsByDate.get(date), date)}</td>`).join('')}
+    </tr>`;
+}
+
+function renderDailyReportTable(product) {
+    const dates = getReportDates();
+    const productMetrics = state.marketingMetrics.filter(metric => metric.product_id === product.id);
+    const metricsByDate = new Map(productMetrics.map(metric => [metric.metric_date, metric]));
+    const monthAggregate = date => {
+        const month = date.slice(0, 7);
+        return aggregateMarketingMetrics(productMetrics.filter(metric => metric.metric_date.startsWith(month) && metric.metric_date <= date));
+    };
+    const won = value => formatWon(value);
+
+    return `
+    <div class="excel-report-scroll">
+        <table class="excel-report-table product-theme-${product.sort_order || 1}">
+            <thead>
+                <tr>
+                    <th class="report-product-cell">
+                        <span>${escapeHtml(product.brand)}</span>
+                        <strong>${escapeHtml(product.name)}</strong>
+                    </th>
+                    ${dates.map(date => {
+                        const parsed = new Date(`${date}T00:00:00`);
+                        return `<th><strong>${parsed.getMonth() + 1}/${parsed.getDate()}</strong><span>${parsed.toLocaleDateString('ko-KR', { weekday: 'short' })}</span></th>`;
+                    }).join('')}
+                </tr>
+            </thead>
+            <tbody>
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-search-line"></i> 검색·콘텐츠</th></tr>
+                ${renderReportRow('브랜드 검색량', dates, metricsByDate, metric => reportMetricValue(metric, 'keyword_search_volume'))}
+                ${renderReportRow('발행 콘텐츠 조회수', dates, metricsByDate, metric => reportMetricValue(metric, 'content_views'))}
+                ${renderReportRow('자사몰 유입수', dates, metricsByDate, metric => reportMetricValue(metric, 'site_visits'), { total: true })}
+
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-shopping-bag-3-line"></i> 판매량</th></tr>
+                ${renderReportRow('자사몰', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe24_orders'), { indent: true })}
+                ${renderReportRow('스마트스토어', dates, metricsByDate, metric => reportMetricValue(metric, 'smartstore_orders'), { indent: true })}
+                ${renderReportRow('쿠팡', dates, metricsByDate, metric => reportMetricValue(metric, 'coupang_orders'), { indent: true })}
+                ${renderReportRow('판매량 총합', dates, metricsByDate, metric => metric ? formatMetric(getMetricSales(metric)) : '<span class="report-no-data">—</span>', { total: true })}
+
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-money-dollar-circle-line"></i> 매출</th></tr>
+                ${renderReportRow('일 매출', dates, metricsByDate, metric => metric ? won(getMetricRevenue(metric)) : '<span class="report-no-data">—</span>')}
+                ${renderReportRow('월 누적 매출', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).revenue) : '<span class="report-no-data">—</span>', { total: true })}
+
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-megaphone-line"></i> 마케팅 광고비</th></tr>
+                ${renderReportRow('일 광고비', dates, metricsByDate, metric => reportMetricValue(metric, 'ad_spend', won))}
+                ${renderReportRow('월 누적 광고비', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).ad_spend) : '<span class="report-no-data">—</span>', { total: true })}
+
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-links-line"></i> 10·10 추적</th></tr>
+                ${renderReportRow('UTM 추적 유입', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_visits'))}
+                ${renderReportRow('UTM 추적 구매', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_orders'))}
+                ${renderReportRow('구매 전환율', dates, metricsByDate, metric => metric ? `${percent(metricNumber(metric.tracked_orders), metricNumber(metric.tracked_visits)).toFixed(1)}%` : '<span class="report-no-data">—</span>', { total: true })}
+            </tbody>
+        </table>
+    </div>`;
+}
+
+function renderInternalReportView() {
+    const product = getReportProduct();
+    if (!product) return `${renderNavbar()}<main class="internal-dashboard"><div class="marketing-empty-row">제품 정보를 불러오는 중입니다.</div></main>`;
+    const keywords = PRODUCT_KEYWORDS[product.slug] || [product.name];
+
+    return `
+    ${renderNavbar()}
+    <main class="internal-dashboard report-dashboard">
+        <section class="report-header">
+            <div>
+                <span class="eyebrow"><i class="ri-file-chart-line"></i> DAILY MARKETING REPORT</span>
+                <h1>제품별 <span>일일 보고서</span></h1>
+                <p>기존 엑셀과 같은 순서로 최근 실적을 빠르게 비교합니다.</p>
+            </div>
+            <div class="internal-actions">
+                <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 오늘 숫자 입력</button>
+            </div>
+        </section>
+
+        <section class="marketing-view-switch">
+            <button class="active" onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
+        </section>
+
+        <section class="report-controls">
+            <div class="report-product-tabs">
+                ${state.marketingProducts.map(item => `
+                    <button class="${item.id === product.id ? 'active' : ''}" onclick="selectMarketingProduct('${item.id}')">
+                        <small>${escapeHtml(item.brand)}</small><strong>${escapeHtml(item.name)}</strong>
+                    </button>`).join('')}
+            </div>
+            <select class="filter-select" onchange="changeReportDays(this.value)">
+                <option value="3" ${state.reportDays === 3 ? 'selected' : ''}>최근 3일</option>
+                <option value="7" ${state.reportDays === 7 ? 'selected' : ''}>최근 7일</option>
+            </select>
+        </section>
+
+        <section class="report-keywords">
+            <span>추적 키워드</span>
+            ${keywords.map(keyword => `<b>${escapeHtml(keyword)}</b>`).join('')}
+        </section>
+
+        <section class="excel-report-card">
+            ${renderDailyReportTable(product)}
+        </section>
+
+        <p class="report-help"><i class="ri-information-line"></i> 숫자가 없는 날짜는 — 로 표시됩니다. 우측 상단 ‘오늘 숫자 입력’에서 기존 엑셀 항목 그대로 기록할 수 있습니다.</p>
+    </main>`;
+}
+
 function renderInternalDashboardView() {
+    return state.marketingView === 'report' ? renderInternalReportView() : renderFunnelDashboardView();
+}
+
+function renderFunnelDashboardView() {
     const metrics = getVisibleMarketingMetrics();
     const total = aggregateMarketingMetrics(metrics);
     const exposureToVisit = percent(total.tracked_visits, total.content_views);
@@ -804,6 +957,11 @@ function renderInternalDashboardView() {
                 </span>
                 <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 일일 데이터 입력</button>
             </div>
+        </section>
+
+        <section class="marketing-view-switch">
+            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button class="active" onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
         </section>
 
         <section class="marketing-toolbar">
@@ -865,6 +1023,19 @@ function renderInternalDashboardView() {
 
 function selectMarketingProduct(productId) {
     state.selectedMarketingProduct = productId;
+    renderApp();
+}
+
+function setMarketingView(view) {
+    state.marketingView = view;
+    if (view === 'report' && state.selectedMarketingProduct === 'all') {
+        state.selectedMarketingProduct = state.marketingProducts[0]?.id || 'all';
+    }
+    renderApp();
+}
+
+function changeReportDays(value) {
+    state.reportDays = Number(value) === 7 ? 7 : 3;
     renderApp();
 }
 
