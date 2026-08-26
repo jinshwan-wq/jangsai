@@ -24,41 +24,49 @@ alter table public.profiles
 create index if not exists profiles_approval_status_idx
     on public.profiles (approval_status, created_at desc);
 
--- 일반 사용자가 자신의 프로필을 수정할 수 있더라도 승인 상태를 조작하지 못하게 한다.
+create or replace function public.is_current_user_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select coalesce(auth.jwt() ->> 'role', '') = 'service_role'
+        or exists (
+            select 1
+            from public.profiles
+            where id = auth.uid()
+              and role_id = 'admin'
+              and approval_status = 'approved'
+        );
+$$;
+
+-- 일반 사용자가 자신의 프로필을 수정할 수 있더라도 승인 상태와 등급을 조작하지 못하게 한다.
 create or replace function public.protect_profile_approval_status()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-    caller_role text;
 begin
     if new.approval_status is not distinct from old.approval_status
        and new.reviewed_at is not distinct from old.reviewed_at
-       and new.reviewed_by is not distinct from old.reviewed_by then
+       and new.reviewed_by is not distinct from old.reviewed_by
+       and new.role_id is not distinct from old.role_id then
         return new;
     end if;
 
-    if coalesce(auth.jwt() ->> 'role', '') = 'service_role' then
+    if public.is_current_user_admin() then
         return new;
     end if;
 
-    select role_id into caller_role
-    from public.profiles
-    where id = auth.uid();
-
-    if caller_role = 'admin' then
-        return new;
-    end if;
-
-    raise exception 'Only administrators can change signup approval status';
+    raise exception 'Only administrators can change role or approval fields';
 end;
 $$;
 
 drop trigger if exists protect_profile_approval_status_trigger on public.profiles;
 create trigger protect_profile_approval_status_trigger
-before update of approval_status, reviewed_at, reviewed_by
+before update of approval_status, reviewed_at, reviewed_by, role_id
 on public.profiles
 for each row
 execute function public.protect_profile_approval_status();
@@ -72,10 +80,8 @@ for select
 to authenticated
 using (
     exists (
-        select 1
-        from public.profiles
-        where profiles.id = auth.uid()
-          and profiles.approval_status = 'approved'
+        select 1 from public.profiles
+        where profiles.id = auth.uid() and profiles.approval_status = 'approved'
     )
 );
 
@@ -87,10 +93,8 @@ for select
 to authenticated
 using (
     exists (
-        select 1
-        from public.profiles
-        where profiles.id = auth.uid()
-          and profiles.approval_status = 'approved'
+        select 1 from public.profiles
+        where profiles.id = auth.uid() and profiles.approval_status = 'approved'
     )
 );
 
@@ -103,9 +107,72 @@ to authenticated
 using (
     bucket_id <> 'programs'
     or exists (
-        select 1
-        from public.profiles
-        where profiles.id = auth.uid()
-          and profiles.approval_status = 'approved'
+        select 1 from public.profiles
+        where profiles.id = auth.uid() and profiles.approval_status = 'approved'
     )
 );
+
+-- 기존의 느슨한 허용 정책이 있더라도 관리자만 관리 데이터를 변경할 수 있게 제한한다.
+drop policy if exists admin_program_insert_only on public.programs;
+create policy admin_program_insert_only on public.programs
+as restrictive for insert to authenticated
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_program_update_only on public.programs;
+create policy admin_program_update_only on public.programs
+as restrictive for update to authenticated
+using (public.is_current_user_admin())
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_program_delete_only on public.programs;
+create policy admin_program_delete_only on public.programs
+as restrictive for delete to authenticated
+using (public.is_current_user_admin());
+
+drop policy if exists admin_program_role_insert_only on public.program_roles;
+create policy admin_program_role_insert_only on public.program_roles
+as restrictive for insert to authenticated
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_program_role_update_only on public.program_roles;
+create policy admin_program_role_update_only on public.program_roles
+as restrictive for update to authenticated
+using (public.is_current_user_admin())
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_program_role_delete_only on public.program_roles;
+create policy admin_program_role_delete_only on public.program_roles
+as restrictive for delete to authenticated
+using (public.is_current_user_admin());
+
+drop policy if exists admin_role_insert_only on public.roles;
+create policy admin_role_insert_only on public.roles
+as restrictive for insert to authenticated
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_role_update_only on public.roles;
+create policy admin_role_update_only on public.roles
+as restrictive for update to authenticated
+using (public.is_current_user_admin())
+with check (public.is_current_user_admin());
+
+drop policy if exists admin_role_delete_only on public.roles;
+create policy admin_role_delete_only on public.roles
+as restrictive for delete to authenticated
+using (public.is_current_user_admin());
+
+drop policy if exists admin_program_file_insert_only on storage.objects;
+create policy admin_program_file_insert_only on storage.objects
+as restrictive for insert to authenticated
+with check (bucket_id <> 'programs' or public.is_current_user_admin());
+
+drop policy if exists admin_program_file_update_only on storage.objects;
+create policy admin_program_file_update_only on storage.objects
+as restrictive for update to authenticated
+using (bucket_id <> 'programs' or public.is_current_user_admin())
+with check (bucket_id <> 'programs' or public.is_current_user_admin());
+
+drop policy if exists admin_program_file_delete_only on storage.objects;
+create policy admin_program_file_delete_only on storage.objects
+as restrictive for delete to authenticated
+using (bucket_id <> 'programs' or public.is_current_user_admin());
