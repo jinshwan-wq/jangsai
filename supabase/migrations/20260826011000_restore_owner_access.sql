@@ -18,9 +18,40 @@ as $$
         );
 $$;
 
-update public.profiles
-set role_id = 'admin',
+insert into public.profiles (
+    id,
+    username,
+    display_name,
+    role_id,
+    approval_status,
+    reviewed_at,
+    reviewed_by
+)
+select
+    users.id,
+    'kher2000',
+    coalesce(users.raw_user_meta_data ->> 'display_name', '최고 관리자'),
+    'admin',
+    'approved',
+    now(),
+    null
+from auth.users as users
+where lower(users.email) = 'kher2000@jangsai.local'
+on conflict (id) do update
+set username = excluded.username,
+    role_id = 'admin',
     approval_status = 'approved',
     reviewed_at = now(),
-    reviewed_by = null
-where username = 'kher2000';
+    reviewed_by = null;
+
+alter table public.profiles enable row level security;
+
+drop policy if exists profile_self_or_admin_read on public.profiles;
+create policy profile_self_or_admin_read
+on public.profiles
+for select
+to authenticated
+using (
+    id = auth.uid()
+    or public.is_current_user_admin()
+);
