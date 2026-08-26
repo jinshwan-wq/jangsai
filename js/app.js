@@ -34,11 +34,14 @@ const state = {
     programs: [],
     currentView: 'loading',
     authMode: 'login',
+    registrationInProgress: false,
+    signupSubmitted: false,
     codeSent: false,
     phoneValue: '',
     activeWebApp: null,
-    adminTab: 'users',
+    adminTab: 'requests',
     adminUsers: [],
+    adminRequests: [],
     adminPrograms: [],
     searchQuery: '',
     categoryFilter: 'all',
@@ -130,7 +133,7 @@ async function register(username, password, displayName) {
     const { data, error } = await sb.auth.signUp({
         email,
         password,
-        options: { data: { username, display_name: displayName || username } }
+        options: { data: { username, display_name: displayName || username, approval_status: 'pending' } }
     });
     if (error) {
         if (error.message.includes('already registered')) throw new Error('이미 존재하는 아이디입니다');
@@ -161,6 +164,14 @@ async function loadProfile() {
     return data;
 }
 
+function getApprovalStatus(profile) {
+    return profile?.approval_status || 'approved';
+}
+
+function isProfileApproved(profile) {
+    return getApprovalStatus(profile) === 'approved';
+}
+
 // ==========================================
 // 데이터 로드
 // ==========================================
@@ -183,7 +194,9 @@ async function loadPrograms() {
 async function loadAdminUsers() {
     const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
     if (error) { console.error('사용자 로드 실패:', error); return; }
-    state.adminUsers = data || [];
+    const profiles = data || [];
+    state.adminUsers = profiles.filter(profile => isProfileApproved(profile));
+    state.adminRequests = profiles.filter(profile => ['pending', 'rejected'].includes(getApprovalStatus(profile)));
 }
 
 async function loadAdminPrograms() {
@@ -202,6 +215,18 @@ async function loadAdminPrograms() {
 async function changeUserRole(userId, newRoleId) {
     const { error } = await sb.from('profiles').update({ role_id: newRoleId }).eq('id', userId);
     if (error) throw new Error('등급 변경 실패: ' + error.message);
+}
+
+async function reviewSignupRequest(userId, status, roleId = null) {
+    const updates = {
+        approval_status: status,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: state.user.id,
+    };
+    if (status === 'approved' && roleId) updates.role_id = roleId;
+
+    const { error } = await sb.from('profiles').update(updates).eq('id', userId);
+    if (error) throw new Error(`${status === 'approved' ? '승인' : '거절'} 처리 실패: ${error.message}`);
 }
 
 async function deleteUser(userId) {
@@ -353,6 +378,18 @@ function renderLoginForm() {
 }
 
 function renderSignupForm() {
+    if (state.signupSubmitted) {
+        return `
+            <div class="auth-form signup-complete">
+                <div class="signup-complete-icon"><i class="ri-time-line"></i></div>
+                <h3>가입 요청이 접수되었습니다</h3>
+                <p>관리자 승인 후 로그인할 수 있습니다.<br>승인이 완료되면 등록한 아이디로 로그인해주세요.</p>
+                <button type="button" class="btn btn-primary btn-block" onclick="switchAuthMode('login')">
+                    로그인 화면으로
+                </button>
+            </div>`;
+    }
+
     return `
             <form class="auth-form" onsubmit="handleRegisterSubmit(event)" id="signup-form">
                 <div class="form-group">
@@ -360,8 +397,8 @@ function renderSignupForm() {
                     <input class="form-input" type="tel" id="signup-username" placeholder="휴대전화 번호 입력" required autocomplete="username" value="${state.phoneValue}">
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="signup-name">이름 (선택)</label>
-                    <input class="form-input" type="text" id="signup-name" placeholder="표시할 이름" autocomplete="name">
+                    <label class="form-label" for="signup-name">이름</label>
+                    <input class="form-input" type="text" id="signup-name" placeholder="이름 입력" required autocomplete="name">
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="signup-password">비밀번호</label>
@@ -372,8 +409,9 @@ function renderSignupForm() {
                     <input class="form-input" type="password" id="signup-password2" placeholder="비밀번호 다시 입력" required minlength="6" autocomplete="new-password">
                 </div>
                 <button type="submit" class="btn-login" id="signup-submit-btn">
-                    회원가입
+                    가입 승인 요청
                 </button>
+                <p class="signup-notice"><i class="ri-shield-check-line"></i> 관리자가 요청을 확인하고 승인한 뒤 이용할 수 있습니다.</p>
             </form>`;
 }
 
@@ -381,6 +419,7 @@ function switchAuthMode(mode) {
     if (state.authMode === mode) return;
     state.authMode = mode;
     state.codeSent = false;
+    if (mode === 'signup') state.signupSubmitted = false;
     renderApp();
 }
 
@@ -427,12 +466,23 @@ async function handleAuthSubmit(e) {
         if (session) {
             state.user = session.user;
             await loadProfile();
+            if (!state.profile || !isProfileApproved(state.profile)) {
+                const status = getApprovalStatus(state.profile);
+                await sb.auth.signOut();
+                state.user = null;
+                state.profile = null;
+                if (status === 'rejected') {
+                    throw new Error('가입 요청이 승인되지 않았습니다. 관리자에게 문의해주세요.');
+                }
+                throw new Error('관리자 승인 대기 중입니다. 승인 후 로그인할 수 있습니다.');
+            }
             await loadRoles();
             state.codeSent = false;
             navigate('dashboard');
         }
     } catch (err) {
-        showToast('인증번호가 올바르지 않습니다. 다시 확인해주세요.', 'error');
+        const knownMessage = err.message?.includes('승인') ? err.message : '인증번호가 올바르지 않습니다. 다시 확인해주세요.';
+        showToast(knownMessage, err.message?.includes('대기') ? 'warning' : 'error');
     } finally {
         btn.textContent = origText;
         btn.disabled = false;
@@ -447,8 +497,8 @@ async function handleRegisterSubmit(e) {
     const password = $('#signup-password').value;
     const password2 = $('#signup-password2').value;
 
-    if (!username || !password) {
-        showToast('아이디와 비밀번호를 입력해주세요', 'warning');
+    if (!username || !displayName || !password) {
+        showToast('모든 항목을 입력해주세요', 'warning');
         return;
     }
     if (username.length < 3) {
@@ -470,26 +520,22 @@ async function handleRegisterSubmit(e) {
     btn.disabled = true;
 
     try {
+        state.registrationInProgress = true;
         const data = await register(username, password, displayName);
 
-        // 이메일 확인이 꺼져 있으면 가입 즉시 세션이 생성됨 → 자동 로그인
-        if (data && data.session) {
-            state.user = data.session.user;
-            await loadProfile();
-            await loadRoles();
-            showToast('회원가입 완료! 자동 로그인되었습니다.', 'success');
-            state.authMode = 'login';
-            navigate('dashboard');
-        } else {
-            showToast('회원가입이 완료되었습니다. 로그인해주세요.', 'success');
-            state.phoneValue = username;
-            state.authMode = 'login';
-            state.codeSent = false;
-            renderApp();
-        }
+        // 이메일 확인이 비활성화된 프로젝트에서도 승인 전 세션을 유지하지 않는다.
+        if (data?.session) await sb.auth.signOut();
+        state.user = null;
+        state.profile = null;
+        state.phoneValue = username;
+        state.codeSent = false;
+        state.signupSubmitted = true;
+        showToast('가입 요청이 접수되었습니다', 'success');
+        renderApp();
     } catch (err) {
         showToast(err.message || '회원가입에 실패했습니다', 'error');
     } finally {
+        state.registrationInProgress = false;
         btn.textContent = origText;
         btn.disabled = false;
     }
@@ -637,7 +683,7 @@ function renderAdminView() {
     <div class="admin">
         <div class="admin-header">
             <h1 class="admin-title">관리자 대시보드</h1>
-            <p class="admin-subtitle">사용자, 등급, 프로그램을 관리합니다</p>
+            <p class="admin-subtitle">가입 요청, 사용자, 등급, 프로그램을 관리합니다</p>
         </div>
 
         <div class="stats-grid">
@@ -645,6 +691,11 @@ function renderAdminView() {
                 <div class="stat-card-icon users"><i class="ri-group-line"></i></div>
                 <div class="stat-value">${state.adminUsers.length}</div>
                 <div class="stat-label">총 사용자</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon requests"><i class="ri-user-follow-line"></i></div>
+                <div class="stat-value">${state.adminRequests.filter(r => getApprovalStatus(r) === 'pending').length}</div>
+                <div class="stat-label">승인 대기</div>
             </div>
             <div class="stat-card">
                 <div class="stat-card-icon roles"><i class="ri-vip-crown-line"></i></div>
@@ -664,6 +715,10 @@ function renderAdminView() {
         </div>
 
         <div class="admin-tabs">
+            <button class="admin-tab ${state.adminTab === 'requests' ? 'active' : ''}" onclick="switchAdminTab('requests')" id="admin-tab-requests">
+                <i class="ri-user-follow-line"></i> 가입 요청
+                <span class="admin-tab-badge">${state.adminRequests.filter(r => getApprovalStatus(r) === 'pending').length}</span>
+            </button>
             <button class="admin-tab ${state.adminTab === 'users' ? 'active' : ''}" onclick="switchAdminTab('users')" id="admin-tab-users">
                 <i class="ri-group-line"></i> 사용자
                 <span class="admin-tab-badge">${state.adminUsers.length}</span>
@@ -679,6 +734,7 @@ function renderAdminView() {
         </div>
 
         <div id="admin-content">
+            ${state.adminTab === 'requests' ? renderSignupRequests() : ''}
             ${state.adminTab === 'users' ? renderAdminUsers() : ''}
             ${state.adminTab === 'roles' ? renderAdminRoles() : ''}
             ${state.adminTab === 'programs' ? renderAdminPrograms() : ''}
@@ -692,9 +748,78 @@ function switchAdminTab(tab) {
     if (content) {
         $$('.admin-tab').forEach(t => t.classList.remove('active'));
         $(`#admin-tab-${tab}`)?.classList.add('active');
-        if (tab === 'users') content.innerHTML = renderAdminUsers();
+        if (tab === 'requests') content.innerHTML = renderSignupRequests();
+        else if (tab === 'users') content.innerHTML = renderAdminUsers();
         else if (tab === 'roles') content.innerHTML = renderAdminRoles();
         else if (tab === 'programs') content.innerHTML = renderAdminPrograms();
+    }
+}
+
+// --- 가입 요청 관리 ---
+function renderSignupRequests() {
+    const pendingRequests = state.adminRequests.filter(request => getApprovalStatus(request) === 'pending');
+    const rejectedRequests = state.adminRequests.filter(request => getApprovalStatus(request) === 'rejected');
+
+    return `
+    <div class="section-header">
+        <div>
+            <h2 class="section-title">가입 승인 요청</h2>
+            <p class="section-description">신청 정보를 확인하고 등급을 지정한 뒤 승인하세요.</p>
+        </div>
+    </div>
+    ${pendingRequests.length === 0 ? `
+        <div class="empty-state compact">
+            <i class="ri-user-received-2-line"></i>
+            <h3>대기 중인 가입 요청이 없습니다</h3>
+        </div>` : `
+        <div class="request-grid">
+            ${pendingRequests.map(request => `
+            <article class="request-card">
+                <div class="request-card-main">
+                    <div class="request-avatar">${escapeHtml((request.display_name || request.username || '?')[0])}</div>
+                    <div>
+                        <h3>${escapeHtml(request.display_name || request.username)}</h3>
+                        <p>${escapeHtml(request.username)}</p>
+                        <span><i class="ri-calendar-line"></i> ${formatDate(request.created_at)} 신청</span>
+                    </div>
+                </div>
+                <div class="request-controls">
+                    <select class="form-input" id="request-role-${request.id}" aria-label="승인 등급">
+                        ${state.roles.filter(role => role.id !== 'admin').map(role =>
+                            `<option value="${role.id}" ${role.is_default ? 'selected' : ''}>${escapeHtml(role.name)}</option>`
+                        ).join('')}
+                    </select>
+                    <button class="btn btn-primary" onclick="handleReviewRequest('${request.id}', 'approved')">
+                        <i class="ri-check-line"></i> 승인
+                    </button>
+                    <button class="btn btn-danger" onclick="handleReviewRequest('${request.id}', 'rejected')">
+                        <i class="ri-close-line"></i> 거절
+                    </button>
+                </div>
+            </article>`).join('')}
+        </div>`}
+    ${rejectedRequests.length ? `
+        <details class="rejected-requests">
+            <summary>거절된 요청 ${rejectedRequests.length}건</summary>
+            ${rejectedRequests.map(request => `
+                <div class="rejected-request-row">
+                    <span>${escapeHtml(request.display_name || request.username)} · ${escapeHtml(request.username)}</span>
+                    <button class="btn btn-secondary btn-sm" onclick="handleReviewRequest('${request.id}', 'approved')">다시 승인</button>
+                </div>`).join('')}
+        </details>` : ''}`;
+}
+
+async function handleReviewRequest(userId, status) {
+    try {
+        const roleId = status === 'approved'
+            ? ($(`#request-role-${userId}`)?.value || state.roles.find(role => role.is_default)?.id || 'trainee')
+            : null;
+        await reviewSignupRequest(userId, status, roleId);
+        showToast(status === 'approved' ? '가입 요청을 승인했습니다' : '가입 요청을 거절했습니다', 'success');
+        await loadAdminUsers();
+        renderApp();
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 
@@ -881,10 +1006,26 @@ async function handleCreateUser(e) {
             throw new Error(errMsg);
         }
 
-        // 프로필 생성 대기 후 등급 변경
+        // 프로필 트리거 완료 후 관리자 생성 계정은 즉시 승인한다.
         if (result.id) {
-            await new Promise(r => setTimeout(r, 1500));
-            await sb.from('profiles').update({ role_id: roleId }).eq('id', result.id);
+            let profileFound = false;
+            for (let attempt = 0; attempt < 8; attempt++) {
+                const { data: profile } = await sb.from('profiles').select('id').eq('id', result.id).maybeSingle();
+                if (profile) {
+                    profileFound = true;
+                    break;
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            if (!profileFound) throw new Error('계정은 생성됐지만 프로필 준비가 지연되고 있습니다. 잠시 후 가입 요청에서 승인해주세요.');
+
+            const { error: updateError } = await sb.from('profiles').update({
+                role_id: roleId,
+                approval_status: 'approved',
+                reviewed_at: new Date().toISOString(),
+                reviewed_by: state.user.id,
+            }).eq('id', result.id);
+            if (updateError) throw new Error('사용자 승인 실패: ' + updateError.message);
         }
 
         showToast(`${name} 사용자가 추가되었습니다!`, 'success');
@@ -1396,17 +1537,29 @@ async function init() {
             await loadRoles();
             await loadProfile();
 
-            if (state.profile) {
+            if (state.profile && isProfileApproved(state.profile)) {
                 hideLoadingScreen();
                 navigate('dashboard');
+            } else if (state.profile) {
+                const status = getApprovalStatus(state.profile);
+                await sb.auth.signOut();
+                state.user = null;
+                state.profile = null;
+                hideLoadingScreen();
+                navigate('auth');
+                showToast(
+                    status === 'rejected' ? '가입 요청이 승인되지 않았습니다. 관리자에게 문의해주세요.' : '관리자 승인 대기 중입니다.',
+                    status === 'rejected' ? 'error' : 'warning'
+                );
             } else {
                 // 프로필이 없는 경우 (트리거 지연 가능)
                 setTimeout(async () => {
                     await loadProfile();
                     hideLoadingScreen();
-                    if (state.profile) {
+                    if (state.profile && isProfileApproved(state.profile)) {
                         navigate('dashboard');
                     } else {
+                        if (state.profile) await sb.auth.signOut();
                         navigate('auth');
                     }
                 }, 1500);
@@ -1427,7 +1580,18 @@ async function init() {
                     await new Promise(r => setTimeout(r, 1000));
                     await loadProfile();
                 }
-                if (state.currentView === 'auth') navigate('dashboard');
+                if (!state.registrationInProgress && state.profile && !isProfileApproved(state.profile)) {
+                    const status = getApprovalStatus(state.profile);
+                    await sb.auth.signOut();
+                    state.user = null;
+                    state.profile = null;
+                    showToast(
+                        status === 'rejected' ? '가입 요청이 승인되지 않았습니다.' : '관리자 승인 대기 중입니다.',
+                        status === 'rejected' ? 'error' : 'warning'
+                    );
+                } else if (!state.registrationInProgress && state.currentView === 'auth') {
+                    navigate('dashboard');
+                }
             } else if (event === 'SIGNED_OUT') {
                 state.user = null;
                 state.profile = null;
