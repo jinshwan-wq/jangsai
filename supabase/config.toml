@@ -1,0 +1,2 @@
+[functions.collect-marketing]
+verify_jwt = false

@@ -42,6 +42,20 @@ const PRODUCT_KEYWORDS = {
     'yural-myeongga-bonhwan': ['유랄 명가본환', '명가본환'],
 };
 
+const MARKETING_INDEX_RULES = {
+    monthlyViewsTarget: 200000,
+    trafficRateTarget: 10,
+    conversionRateTarget: 10,
+    warningBelow: 80,
+    excellentAbove: 120,
+};
+
+const MARKETING_CHANNELS = [
+    { id: 'cafe24', label: '자사몰', visits: 'cafe24_visits', legacyVisits: 'site_visits', orders: 'cafe24_orders', revenue: 'cafe24_revenue' },
+    { id: 'smartstore', label: '스마트스토어', visits: 'smartstore_visits', orders: 'smartstore_orders', revenue: 'smartstore_revenue' },
+    { id: 'coupang', label: '쿠팡', visits: 'coupang_visits', orders: 'coupang_orders', revenue: 'coupang_revenue' },
+];
+
 // --- 앱 상태 ---
 const state = {
     user: null,
@@ -63,6 +77,10 @@ const state = {
     categoryFilter: 'all',
     marketingProducts: [],
     marketingMetrics: [],
+    marketingTargets: [],
+    marketingRuns: [],
+    marketingBatches: [],
+    marketingSearchSnapshots: [],
     selectedMarketingProduct: 'all',
     marketingPeriod: '7d',
     marketingView: 'report',
@@ -240,12 +258,23 @@ async function loadPrograms() {
 
 async function loadMarketingData() {
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 62);
+    startDate.setDate(startDate.getDate() - 370);
     const dateFrom = startDate.toISOString().slice(0, 10);
 
-    const [{ data: products, error: productError }, { data: metrics, error: metricError }] = await Promise.all([
+    const [
+        { data: products, error: productError },
+        { data: metrics, error: metricError },
+        { data: targets, error: targetError },
+        { data: runs, error: runError },
+        { data: batches, error: batchError },
+        { data: searchSnapshots, error: searchSnapshotError },
+    ] = await Promise.all([
         sb.from('marketing_products').select('*').eq('is_active', true).order('sort_order'),
         sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
+        sb.from('marketing_targets').select('*').order('period_start', { ascending: false }),
+        sb.from('marketing_ingestion_runs').select('*').order('started_at', { ascending: false }).limit(30),
+        sb.from('marketing_ingestion_batches').select('*').order('started_at', { ascending: false }).limit(10),
+        sb.from('keyword_search_snapshots').select('*').gte('snapshot_date', dateFrom).order('snapshot_date'),
     ]);
 
     if (productError || metricError) {
@@ -258,6 +287,10 @@ async function loadMarketingData() {
 
     state.marketingProducts = products?.length ? products : DEFAULT_MARKETING_PRODUCTS;
     state.marketingMetrics = metrics || [];
+    state.marketingTargets = targetError ? [] : (targets || []);
+    state.marketingRuns = runError ? [] : (runs || []);
+    state.marketingBatches = batchError ? [] : (batches || []);
+    state.marketingSearchSnapshots = searchSnapshotError ? [] : (searchSnapshots || []);
     state.marketingDataReady = true;
 }
 
@@ -654,6 +687,12 @@ function metricNumber(value) {
     return Number(value) || 0;
 }
 
+function nullableMetricNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 function formatMetric(value) {
     return new Intl.NumberFormat('ko-KR').format(Math.round(metricNumber(value)));
 }
@@ -667,16 +706,55 @@ function getMetricSales(metric) {
 }
 
 function getMetricRevenue(metric) {
-    return metricNumber(metric?.cafe24_revenue) + metricNumber(metric?.coupang_revenue) + metricNumber(metric?.smartstore_revenue);
+    const channelRevenue = metricNumber(metric?.cafe24_revenue) + metricNumber(metric?.coupang_revenue) + metricNumber(metric?.smartstore_revenue);
+    return Math.max(channelRevenue, metricNumber(metric?.reported_total_revenue));
+}
+
+function getMetricExposure(metric) {
+    const blogViews = nullableMetricNumber(metric?.blog_views);
+    const cafeViews = nullableMetricNumber(metric?.cafe_views);
+    if (blogViews !== null || cafeViews !== null) return metricNumber(blogViews) + metricNumber(cafeViews);
+    return metricNumber(metric?.content_views);
+}
+
+function getChannelVisits(metric, channel) {
+    const value = nullableMetricNumber(metric?.[channel.visits]);
+    if (value !== null) return value;
+    if (channel.legacyVisits && metricNumber(metric?.[channel.legacyVisits]) > 0) return metricNumber(metric[channel.legacyVisits]);
+    return null;
+}
+
+function hasCollectedMetric(metric, key) {
+    if (metric?.data_completeness?.[key] === true) return true;
+    return metricNumber(metric?.[key]) > 0;
+}
+
+function isChannelPairMeasured(metric, channel) {
+    return getChannelVisits(metric, channel) !== null && hasCollectedMetric(metric, channel.orders);
+}
+
+function getSelectedProductIds() {
+    if (state.selectedMarketingProduct === 'all') return new Set(state.marketingProducts.map(product => product.id));
+    if (state.selectedMarketingProduct.startsWith('brand:')) {
+        const brand = state.selectedMarketingProduct.slice(6);
+        return new Set(state.marketingProducts.filter(product => product.brand === brand).map(product => product.id));
+    }
+    return new Set([state.selectedMarketingProduct]);
+}
+
+function getSelectedBrands() {
+    const ids = getSelectedProductIds();
+    return [...new Set(state.marketingProducts.filter(product => ids.has(product.id)).map(product => product.brand))];
 }
 
 function getVisibleMarketingMetrics() {
     const { from, to } = getPeriodBounds(state.marketingPeriod);
+    const selectedIds = getSelectedProductIds();
 
     return state.marketingMetrics.filter(metric =>
         metric.metric_date >= from &&
         metric.metric_date <= to &&
-        (state.selectedMarketingProduct === 'all' || metric.product_id === state.selectedMarketingProduct)
+        selectedIds.has(metric.product_id)
     );
 }
 
@@ -704,7 +782,9 @@ function getPeriodBounds(period) {
 
 function aggregateMarketingMetrics(metrics) {
     return metrics.reduce((total, metric) => {
-        total.content_views += metricNumber(metric.content_views);
+        total.blog_views += metricNumber(metric.blog_views);
+        total.cafe_views += metricNumber(metric.cafe_views);
+        total.content_views += getMetricExposure(metric);
         total.keyword_search_volume += metricNumber(metric.keyword_search_volume);
         total.site_visits += metricNumber(metric.site_visits);
         total.tracked_visits += metricNumber(metric.tracked_visits);
@@ -712,16 +792,168 @@ function aggregateMarketingMetrics(metrics) {
         total.orders += getMetricSales(metric);
         total.revenue += getMetricRevenue(metric);
         total.ad_spend += metricNumber(metric.ad_spend);
+        MARKETING_CHANNELS.forEach(channel => {
+            const visits = getChannelVisits(metric, channel);
+            total.channelPairsExpected++;
+            if (visits !== null && isChannelPairMeasured(metric, channel)) {
+                total.visits += visits;
+                total.attributableOrders += metricNumber(metric[channel.orders]);
+                total.channelPairsMeasured++;
+                total.measuredChannels.add(channel.label);
+            } else {
+                total.missingChannels.add(channel.label);
+            }
+        });
+        if (metric.collection_status === 'failed') total.failedRecords++;
+        if (metric.collection_status === 'partial') total.partialRecords++;
         return total;
-    }, { content_views: 0, keyword_search_volume: 0, site_visits: 0, tracked_visits: 0, tracked_orders: 0, orders: 0, revenue: 0, ad_spend: 0 });
+    }, {
+        blog_views: 0, cafe_views: 0, content_views: 0, keyword_search_volume: 0,
+        site_visits: 0, tracked_visits: 0, tracked_orders: 0, visits: 0,
+        attributableOrders: 0, orders: 0, revenue: 0, ad_spend: 0,
+        channelPairsExpected: 0, channelPairsMeasured: 0,
+        measuredChannels: new Set(), missingChannels: new Set(),
+        failedRecords: 0, partialRecords: 0,
+    });
 }
 
 function percent(numerator, denominator) {
     return denominator > 0 ? (numerator / denominator) * 100 : 0;
 }
 
-function renderMarketingDiagnosis(total) {
-    if (!total.content_views && !total.keyword_search_volume && !total.site_visits && !total.orders) {
+function getAverageDailySearchVolume(metrics) {
+    const daily = new Map();
+    metrics.forEach(metric => {
+        const hasSearchData = metricNumber(metric.keyword_search_volume) > 0 || metric.data_completeness?.keyword_search_volume === true;
+        if (!hasSearchData) return;
+        daily.set(metric.metric_date, (daily.get(metric.metric_date) || 0) + metricNumber(metric.keyword_search_volume));
+    });
+    const values = [...daily.values()];
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function getSearchSnapshotSeries() {
+    const selectedIds = getSelectedProductIds();
+    const daily = new Map();
+    state.marketingSearchSnapshots
+        .filter(snapshot => selectedIds.has(snapshot.product_id))
+        .forEach(snapshot => {
+            daily.set(snapshot.snapshot_date, (daily.get(snapshot.snapshot_date) || 0) + metricNumber(snapshot.search_volume));
+        });
+    return [...daily.entries()]
+        .map(([date, value]) => ({ date, value }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getCurrentSearchVolume(metrics) {
+    const series = getSearchSnapshotSeries();
+    return series.length ? series[series.length - 1].value : getAverageDailySearchVolume(metrics);
+}
+
+function getMonthTarget(referenceDate = kstDateString(-1)) {
+    const periodStart = `${referenceDate.slice(0, 7)}-01`;
+    const selectedBrands = getSelectedBrands();
+    const selectedIds = [...getSelectedProductIds()];
+
+    if (selectedIds.length === 1) {
+        const productTarget = state.marketingTargets.find(target =>
+            target.scope_type === 'product' &&
+            target.scope_key === selectedIds[0] &&
+            target.period_type === 'month' &&
+            target.period_start === periodStart
+        );
+        if (productTarget) return productTarget;
+    }
+
+    const brandTargets = selectedBrands.map(brand => state.marketingTargets.find(target =>
+        target.scope_type === 'brand' &&
+        target.scope_key === brand &&
+        target.period_type === 'month' &&
+        target.period_start === periodStart
+    ));
+    return {
+        content_views_target: brandTargets.reduce((sum, target) => sum + metricNumber(target?.content_views_target || MARKETING_INDEX_RULES.monthlyViewsTarget), 0),
+        traffic_rate_target: brandTargets.find(Boolean)?.traffic_rate_target || MARKETING_INDEX_RULES.trafficRateTarget,
+        conversion_rate_target: brandTargets.find(Boolean)?.conversion_rate_target || MARKETING_INDEX_RULES.conversionRateTarget,
+    };
+}
+
+function getMetricsInDateRange(from, to) {
+    const selectedIds = getSelectedProductIds();
+    return state.marketingMetrics.filter(metric =>
+        selectedIds.has(metric.product_id) &&
+        metric.metric_date >= from &&
+        metric.metric_date <= to
+    );
+}
+
+function calculateSearchMomentum() {
+    const snapshots = getSearchSnapshotSeries();
+    if (snapshots.length >= 2) {
+        const current = snapshots[snapshots.length - 1].value;
+        const previous = snapshots[snapshots.length - 2].value;
+        return previous ? ((current - previous) / previous) * 100 : null;
+    }
+    const today = new Date();
+    const currentEnd = localDateString(today);
+    const currentStartDate = new Date(today);
+    currentStartDate.setDate(today.getDate() - 6);
+    const previousEndDate = new Date(currentStartDate);
+    previousEndDate.setDate(previousEndDate.getDate() - 1);
+    const previousStartDate = new Date(previousEndDate);
+    previousStartDate.setDate(previousStartDate.getDate() - 6);
+    const current = getAverageDailySearchVolume(getMetricsInDateRange(localDateString(currentStartDate), currentEnd));
+    const previous = getAverageDailySearchVolume(getMetricsInDateRange(localDateString(previousStartDate), localDateString(previousEndDate)));
+    if (!previous) return null;
+    return ((current - previous) / previous) * 100;
+}
+
+function calculateMarketingHealth(metrics) {
+    const total = aggregateMarketingMetrics(metrics);
+    const referenceDate = kstDateString(-1);
+    const reference = new Date(`${referenceDate}T00:00:00`);
+    const target = getMonthTarget(referenceDate);
+    const monthStart = new Date(reference.getFullYear(), reference.getMonth(), 1);
+    const monthEnd = new Date(reference.getFullYear(), reference.getMonth() + 1, 0);
+    const monthlyMetrics = getMetricsInDateRange(localDateString(monthStart), referenceDate);
+    const monthlyTotal = aggregateMarketingMetrics(monthlyMetrics);
+    const expectedViews = metricNumber(target.content_views_target) * (reference.getDate() / monthEnd.getDate());
+    const trafficRate = total.content_views > 0 && total.channelPairsMeasured > 0 ? percent(total.visits, total.content_views) : null;
+    const conversionRate = total.visits > 0 ? percent(total.attributableOrders, total.visits) : null;
+    const exposureIndex = expectedViews > 0 ? (monthlyTotal.content_views / expectedViews) * 100 : null;
+    const trafficIndex = trafficRate === null ? null : (trafficRate / metricNumber(target.traffic_rate_target)) * 100;
+    const conversionIndex = conversionRate === null ? null : (conversionRate / metricNumber(target.conversion_rate_target)) * 100;
+    const availableIndices = [exposureIndex, trafficIndex, conversionIndex].filter(value => value !== null && Number.isFinite(value));
+
+    return {
+        total,
+        target,
+        expectedViews,
+        exposureIndex,
+        trafficIndex,
+        conversionIndex,
+        overallIndex: availableIndices.length ? availableIndices.reduce((sum, value) => sum + value, 0) / availableIndices.length : null,
+        trafficRate,
+        conversionRate,
+        dataCoverage: total.channelPairsExpected ? (total.channelPairsMeasured / total.channelPairsExpected) * 100 : 0,
+        searchMomentum: calculateSearchMomentum(),
+    };
+}
+
+function getIndexStatus(value) {
+    if (value === null || !Number.isFinite(value)) return 'unknown';
+    if (value < MARKETING_INDEX_RULES.warningBelow) return 'danger';
+    if (value > MARKETING_INDEX_RULES.excellentAbove) return 'excellent';
+    return 'stable';
+}
+
+function formatIndex(value) {
+    return value === null || !Number.isFinite(value) ? '—' : Math.round(value).toLocaleString('ko-KR');
+}
+
+function renderMarketingDiagnosis(health) {
+    const { total } = health;
+    if (!total.content_views && !total.keyword_search_volume && !total.visits && !total.orders) {
         return `
         <div class="diagnosis-item neutral">
             <i class="ri-information-line"></i>
@@ -729,17 +961,39 @@ function renderMarketingDiagnosis(total) {
         </div>`;
     }
 
-    const exposureToVisit = percent(total.tracked_visits, total.content_views);
-    const conversion = percent(total.tracked_orders, total.tracked_visits);
     const diagnoses = [];
 
-    if (total.content_views === 0) diagnoses.push(['danger', 'ri-file-warning-line', '콘텐츠 노출 확인 필요', '발행 글 또는 카페 게시물 조회 데이터가 없습니다. 게시물·계정 노출 상태를 확인하세요.']);
-    else if (exposureToVisit < 10) diagnoses.push(['warning', 'ri-route-line', '노출 대비 유입이 낮습니다', `현재 ${exposureToVisit.toFixed(1)}%입니다. 원고 설득력, 링크 위치와 CTA를 점검하세요.`]);
-    else diagnoses.push(['good', 'ri-check-line', '노출→유입 흐름이 양호합니다', `현재 ${exposureToVisit.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
+    if (getIndexStatus(health.exposureIndex) === 'danger') {
+        diagnoses.push(['danger', 'ri-file-warning-line', '노출 목표 진도가 부족합니다', '블로그 방문자, 카페 글 조회수, 게시물·계정 노출 상태와 발행량을 먼저 확인하세요.']);
+    } else {
+        diagnoses.push(['good', 'ri-eye-line', '노출 목표 진도가 안정적입니다', `월 목표 진도 대비 ${formatIndex(health.exposureIndex)} 지수입니다.`]);
+    }
 
-    if (total.keyword_search_volume === 0) diagnoses.push(['neutral', 'ri-search-eye-line', '브랜드 검색 관심 데이터가 없습니다', '검색량 또는 검색지수를 연결하면 콘텐츠 노출과 관심도의 동반 추세를 확인할 수 있습니다.']);
-    if (total.tracked_visits > 0 && conversion < 10) diagnoses.push(['warning', 'ri-shopping-cart-line', '추적 유입 대비 구매 전환이 낮습니다', `현재 ${conversion.toFixed(1)}%입니다. 리뷰, 상세페이지, 가격 및 경쟁사 변화를 확인하세요.`]);
-    else if (total.tracked_orders > 0) diagnoses.push(['good', 'ri-shopping-bag-3-line', '추적 구매 전환이 기준 이상입니다', `현재 ${conversion.toFixed(1)}%로 10·10 기준을 충족합니다.`]);
+    if (health.trafficIndex === null) {
+        diagnoses.push(['neutral', 'ri-database-2-line', '유입 데이터가 부족합니다', '채널 방문자 수가 확보되어야 노출→유입 10%를 계산할 수 있습니다.']);
+    } else if (getIndexStatus(health.trafficIndex) === 'danger') {
+        diagnoses.push(['warning', 'ri-route-line', '노출은 있지만 유입 효율이 낮습니다', `현재 ${health.trafficRate.toFixed(1)}%입니다. 원고 설득력, CTA와 링크 위치를 점검하세요.`]);
+    } else {
+        diagnoses.push(['good', 'ri-check-line', '노출→유입 흐름이 안정적입니다', `현재 ${health.trafficRate.toFixed(1)}%로 10·10 안정권입니다.`]);
+    }
+
+    if (health.conversionIndex === null) {
+        diagnoses.push(['neutral', 'ri-shopping-cart-line', '전환 데이터가 부족합니다', '같은 채널의 방문자와 구매량이 함께 있어야 전환율을 계산합니다.']);
+    } else if (getIndexStatus(health.conversionIndex) === 'danger') {
+        diagnoses.push(['danger', 'ri-shopping-cart-line', '유입 대비 구매 전환이 낮습니다', `현재 ${health.conversionRate.toFixed(1)}%입니다. 리뷰, 가격, 상세페이지와 경쟁사 변화를 확인하세요.`]);
+    } else {
+        diagnoses.push(['good', 'ri-shopping-bag-3-line', '구매 전환이 안정적입니다', `현재 ${health.conversionRate.toFixed(1)}%로 10·10 안정권입니다.`]);
+    }
+
+    if (health.searchMomentum === null) {
+        diagnoses.push(['neutral', 'ri-search-eye-line', '브랜드 검색 비교 데이터가 부족합니다', '검색량 스냅샷이 2회 이상 쌓이면 노출과 검색 관심의 동반 추세를 비교합니다.']);
+    } else if (total.content_views > 0 && health.searchMomentum < 0) {
+        diagnoses.push(['warning', 'ri-search-eye-line', '노출이 검색 관심으로 이어지지 않습니다', `브랜드 검색량이 직전 수집보다 ${Math.abs(health.searchMomentum).toFixed(1)}% 감소했습니다.`]);
+    }
+
+    if (health.dataCoverage < 100) {
+        diagnoses.push(['neutral', 'ri-signal-wifi-error-line', '전환율 측정 범위가 일부 채널로 제한됩니다', `방문자 데이터 완성도 ${health.dataCoverage.toFixed(0)}%입니다. 총판매량은 전 채널, 전환율은 측정 가능한 채널만 사용합니다.`]);
+    }
 
     return diagnoses.map(([type, icon, title, description]) => `
         <div class="diagnosis-item ${type}">
@@ -753,6 +1007,7 @@ function renderProductMetricCard(product) {
         .filter(metric => metric.product_id === product.id)
         .sort((a, b) => b.metric_date.localeCompare(a.metric_date));
     const latest = metrics[0];
+    const latestTotal = latest ? aggregateMarketingMetrics([latest]) : null;
     const title = `${product.brand} ${product.name}`;
 
     return `
@@ -766,7 +1021,7 @@ function renderProductMetricCard(product) {
         ${latest ? `
         <div class="metric-product-summary">
             <span><small>검색량</small><strong>${formatMetric(latest.keyword_search_volume)}</strong></span>
-            <span><small>유입</small><strong>${formatMetric(latest.site_visits)}</strong></span>
+            <span><small>유입</small><strong>${latestTotal.channelPairsMeasured ? formatMetric(latestTotal.visits) : '—'}</strong></span>
             <span><small>판매</small><strong>${formatMetric(getMetricSales(latest))}</strong></span>
         </div>
         <p>${formatDate(latest.metric_date)} · ${formatWon(getMetricRevenue(latest))}</p>` : `
@@ -788,19 +1043,21 @@ function renderMarketingDailyTable(metrics) {
     return `
     <div class="marketing-table-wrap">
         <table class="marketing-table">
-            <thead><tr><th>날짜</th><th>콘텐츠 노출</th><th>브랜드 검색</th><th>UTM 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>추적 전환율</th></tr></thead>
+            <thead><tr><th>날짜</th><th>블로그</th><th>카페</th><th>노출 합계</th><th>브랜드 검색</th><th>측정 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>측정 전환율</th></tr></thead>
             <tbody>
             ${rows.map(([date, dayMetrics]) => {
                 const day = aggregateMarketingMetrics(dayMetrics);
                 return `<tr>
                     <td><strong>${formatDate(date)}</strong></td>
+                    <td>${formatMetric(day.blog_views)}</td>
+                    <td>${formatMetric(day.cafe_views)}</td>
                     <td>${formatMetric(day.content_views)}</td>
                     <td>${formatMetric(day.keyword_search_volume)}</td>
-                    <td>${formatMetric(day.tracked_visits)}</td>
+                    <td>${day.channelPairsMeasured ? formatMetric(day.visits) : '—'}</td>
                     <td>${formatMetric(day.orders)}</td>
                     <td>${formatWon(day.revenue)}</td>
                     <td>${formatWon(day.ad_spend)}</td>
-                    <td>${percent(day.tracked_orders, day.tracked_visits).toFixed(1)}%</td>
+                    <td>${day.visits > 0 ? `${percent(day.attributableOrders, day.visits).toFixed(1)}%` : '—'}</td>
                 </tr>`;
             }).join('')}
             </tbody>
@@ -813,6 +1070,19 @@ function localDateString(date) {
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+}
+
+function kstDateString(offsetDays = 0) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(new Date());
+    const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    const date = new Date(Date.UTC(Number(value.year), Number(value.month) - 1, Number(value.day)));
+    date.setUTCDate(date.getUTCDate() + offsetDays);
+    return date.toISOString().slice(0, 10);
 }
 
 function getReportDates() {
@@ -875,8 +1145,19 @@ function renderDailyReportTable(product) {
             <tbody>
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-search-line"></i> 검색·콘텐츠</th></tr>
                 ${renderReportRow('브랜드 검색량', dates, metricsByDate, metric => reportMetricValue(metric, 'keyword_search_volume'))}
-                ${renderReportRow('발행 콘텐츠 조회수', dates, metricsByDate, metric => reportMetricValue(metric, 'content_views'))}
-                ${renderReportRow('자사몰 유입수', dates, metricsByDate, metric => reportMetricValue(metric, 'site_visits'), { total: true })}
+                ${renderReportRow('블로그 방문자 수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.blog_views)) : '<span class="report-no-data">—</span>')}
+                ${renderReportRow('카페 글 조회수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.cafe_views)) : '<span class="report-no-data">—</span>')}
+                ${renderReportRow('노출 합계', dates, metricsByDate, metric => metric ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
+
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
+                ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('스마트스토어', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[1]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[1]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('쿠팡', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('측정 유입 합계', dates, metricsByDate, metric => {
+                    if (!metric) return '<span class="report-no-data">—</span>';
+                    const day = aggregateMarketingMetrics([metric]);
+                    return day.channelPairsMeasured ? formatMetric(day.visits) : '<span class="report-no-data">—</span>';
+                }, { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-shopping-bag-3-line"></i> 판매량</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe24_orders'), { indent: true })}
@@ -892,10 +1173,14 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('일 광고비', dates, metricsByDate, metric => reportMetricValue(metric, 'ad_spend', won))}
                 ${renderReportRow('월 누적 광고비', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).ad_spend) : '<span class="report-no-data">—</span>', { total: true })}
 
-                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-links-line"></i> 10·10 추적</th></tr>
+                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-links-line"></i> 보조 추적</th></tr>
                 ${renderReportRow('UTM 추적 유입', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_visits'))}
                 ${renderReportRow('UTM 추적 구매', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_orders'))}
-                ${renderReportRow('구매 전환율', dates, metricsByDate, metric => metric ? `${percent(metricNumber(metric.tracked_orders), metricNumber(metric.tracked_visits)).toFixed(1)}%` : '<span class="report-no-data">—</span>', { total: true })}
+                ${renderReportRow('전채널 측정 전환율', dates, metricsByDate, metric => {
+                    if (!metric) return '<span class="report-no-data">—</span>';
+                    const day = aggregateMarketingMetrics([metric]);
+                    return day.visits > 0 ? `${percent(day.attributableOrders, day.visits).toFixed(1)}%` : '<span class="report-no-data">—</span>';
+                }, { total: true })}
             </tbody>
         </table>
     </div>`;
@@ -916,14 +1201,15 @@ function renderInternalReportView() {
                 <p>기존 엑셀과 같은 순서로 최근 실적을 빠르게 비교합니다.</p>
             </div>
             <div class="internal-actions">
-                <button class="btn btn-secondary" onclick="showGoogleSheetImportModal()"><i class="ri-google-line"></i> 구글시트 가져오기</button>
-                <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 오늘 숫자 입력</button>
+                <button class="btn btn-secondary" onclick="showGoogleSheetImportModal()"><i class="ri-google-line"></i> 임시 시트 가져오기</button>
+                <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 누락 데이터 보완</button>
             </div>
         </section>
 
         <section class="marketing-view-switch">
             <button class="active" onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
             <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
+            <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
 
         <section class="report-controls">
@@ -947,23 +1233,35 @@ function renderInternalReportView() {
             ${renderDailyReportTable(product)}
         </section>
 
-        <p class="report-help"><i class="ri-information-line"></i> 숫자가 없는 날짜는 — 로 표시됩니다. 우측 상단 ‘오늘 숫자 입력’에서 기존 엑셀 항목 그대로 기록할 수 있습니다.</p>
+        <p class="report-help"><i class="ri-information-line"></i> 숫자가 없는 날짜는 — 로 표시됩니다. 자동 수집이 실패한 항목만 우측 상단에서 임시 보완할 수 있습니다.</p>
     </main>`;
 }
 
 function renderInternalDashboardView() {
-    return state.marketingView === 'report' ? renderInternalReportView() : renderFunnelDashboardView();
+    if (state.marketingView === 'report') return renderInternalReportView();
+    if (state.marketingView === 'okr') return renderOkrDashboardView();
+    return renderFunnelDashboardView();
 }
 
 function renderFunnelDashboardView() {
     const metrics = getVisibleMarketingMetrics();
-    const total = aggregateMarketingMetrics(metrics);
-    const exposureToVisit = percent(total.tracked_visits, total.content_views);
-    const conversion = percent(total.tracked_orders, total.tracked_visits);
+    const health = calculateMarketingHealth(metrics);
+    const { total } = health;
     const roas = percent(total.revenue, total.ad_spend);
-    const tenTenIndex = total.content_views > 0
-        ? Math.round((Math.min(exposureToVisit / 10, 2) + Math.min(conversion / 10, 2)) * 50)
-        : 0;
+    const brands = [...new Set(state.marketingProducts.map(product => product.brand))];
+    const expectedDate = kstDateString(-1);
+    const expectedBatch = state.marketingBatches.find(batch => batch.metric_date === expectedDate);
+    const batchAgeMinutes = expectedBatch ? (Date.now() - new Date(expectedBatch.started_at).getTime()) / 60000 : 0;
+    const runStatus = expectedBatch?.status === 'running' && batchAgeMinutes > 30
+        ? 'failed'
+        : (expectedBatch?.status || 'skipped');
+    const runLabel = {
+        success: '09시 자동수집 완료',
+        partial: '일부 채널 수집',
+        failed: '자동수집 실패',
+        running: '자동수집 중',
+        skipped: '자동수집 설정 대기',
+    }[runStatus] || '수집 상태 확인';
 
     return `
     ${renderNavbar()}
@@ -975,24 +1273,25 @@ function renderFunnelDashboardView() {
                 <p>노출부터 검색, 유입, 판매까지 매일 같은 기준으로 확인합니다.</p>
             </div>
             <div class="internal-actions">
-                <span class="sync-status ${state.marketingDataReady ? '' : 'waiting'}">
-                    <i class="${state.marketingDataReady ? 'ri-checkbox-circle-line' : 'ri-time-line'}"></i>
-                    ${state.marketingDataReady ? '데이터 연결됨' : 'DB 설정 필요'}
+                <span class="sync-status ${['failed', 'partial', 'skipped'].includes(runStatus) ? 'waiting' : ''}">
+                    <i class="${runStatus === 'success' ? 'ri-checkbox-circle-line' : 'ri-time-line'}"></i>
+                    ${runLabel}
                 </span>
-                <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 일일 데이터 입력</button>
+                <button class="btn btn-secondary" onclick="showDailyMetricModal()"><i class="ri-edit-line"></i> 누락 데이터 보완</button>
             </div>
         </section>
 
         <section class="marketing-view-switch">
             <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
             <button class="active" onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
+            <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
 
         <section class="marketing-toolbar">
             <div class="marketing-product-filter">
-                <button class="${state.selectedMarketingProduct === 'all' ? 'active' : ''}" onclick="selectMarketingProduct('all')">전체 제품</button>
-                ${state.marketingProducts.map(product => `
-                    <button class="${state.selectedMarketingProduct === product.id ? 'active' : ''}" onclick="selectMarketingProduct('${product.id}')">${escapeHtml(product.name)}</button>
+                <button class="${state.selectedMarketingProduct === 'all' ? 'active' : ''}" onclick="selectMarketingProduct('all')">전체 브랜드</button>
+                ${brands.map(brand => `
+                    <button class="${state.selectedMarketingProduct === `brand:${brand}` ? 'active' : ''}" onclick="selectMarketingBrand('${encodeURIComponent(brand)}')">${escapeHtml(brand)}</button>
                 `).join('')}
             </div>
             <select class="filter-select" onchange="changeMarketingPeriod(this.value)">
@@ -1003,27 +1302,32 @@ function renderFunnelDashboardView() {
         <section class="funnel-panel">
             <div class="funnel-heading">
                 <div><span>10·10 FUNNEL</span><h2>노출에서 구매까지</h2></div>
-                <div class="ten-ten-index"><small>장스 지수</small><strong>${tenTenIndex}</strong><span>/ 100</span></div>
+                <div class="ten-ten-index ${getIndexStatus(health.overallIndex)}"><small>종합 장스 지수</small><strong>${formatIndex(health.overallIndex)}</strong><span>100 기준</span></div>
+            </div>
+            <div class="marketing-index-grid">
+                ${renderIndexCard('노출지수', health.exposureIndex, '월 20만 뷰 목표 진도', 'ri-eye-line')}
+                ${renderIndexCard('유입지수', health.trafficIndex, `현재 ${health.trafficRate === null ? '측정 불가' : `${health.trafficRate.toFixed(1)}%`}`, 'ri-route-line')}
+                ${renderIndexCard('전환지수', health.conversionIndex, `현재 ${health.conversionRate === null ? '측정 불가' : `${health.conversionRate.toFixed(1)}%`}`, 'ri-shopping-cart-line')}
             </div>
             <div class="funnel-flow">
-                <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${formatMetric(total.content_views)}</strong><small>블로그·카페 조회</small></div>
-                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${exposureToVisit.toFixed(1)}%</b></div>
-                <div class="funnel-step search"><i class="ri-links-line"></i><span>추적 유입</span><strong>${formatMetric(total.tracked_visits)}</strong><small>UTM·전용 링크</small></div>
-                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${conversion.toFixed(1)}%</b></div>
-                <div class="funnel-step visit"><i class="ri-shopping-bag-3-line"></i><span>추적 구매</span><strong>${formatMetric(total.tracked_orders)}건</strong><small>캠페인 귀속 구매</small></div>
+                <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${formatMetric(total.content_views)}</strong><small>블로그 ${formatMetric(total.blog_views)} + 카페 ${formatMetric(total.cafe_views)}</small></div>
+                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${health.trafficRate === null ? '—' : `${health.trafficRate.toFixed(1)}%`}</b></div>
+                <div class="funnel-step search"><i class="ri-links-line"></i><span>측정 가능 유입</span><strong>${total.channelPairsMeasured ? formatMetric(total.visits) : '—'}</strong><small>${[...total.measuredChannels].join('·') || '채널 연결 필요'}</small></div>
+                <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${health.conversionRate === null ? '—' : `${health.conversionRate.toFixed(1)}%`}</b></div>
+                <div class="funnel-step visit"><i class="ri-shopping-bag-3-line"></i><span>전체 구매</span><strong>${formatMetric(total.orders)}건</strong><small>자사몰·스마트스토어·쿠팡</small></div>
                 <div class="funnel-rate reference"><i class="ri-more-line"></i><b>참고</b></div>
                 <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>전체 매출</span><strong>${formatWon(total.revenue)}</strong><small>3개 판매채널 합계</small></div>
             </div>
-            <p class="funnel-disclaimer"><i class="ri-information-line"></i> 브랜드 검색량과 전체 채널 매출은 직접 전환으로 단정하지 않고 별도 참고 지표로 봅니다.</p>
+            <p class="funnel-disclaimer"><i class="ri-information-line"></i> 총판매량은 전 채널을 합산합니다. 전환율은 방문자와 구매가 모두 확보된 동일 채널만 사용하며 현재 데이터 완성도는 ${health.dataCoverage.toFixed(0)}%입니다.</p>
         </section>
 
         <section class="marketing-kpis">
-            <div class="marketing-kpi"><span>브랜드 검색 관심</span><strong>${formatMetric(total.keyword_search_volume)}</strong><small>검색량 또는 검색지수</small></div>
-            <div class="marketing-kpi"><span>자사몰 전체 유입</span><strong>${formatMetric(total.site_visits)}</strong><small>추적 여부와 무관한 전체 방문</small></div>
+            <div class="marketing-kpi"><span>브랜드 검색 관심</span><strong>${formatMetric(getCurrentSearchVolume(metrics))}</strong><small>최근 30일 검색량 · 직전 수집 대비 ${health.searchMomentum === null ? '비교 불가' : `${health.searchMomentum >= 0 ? '+' : ''}${health.searchMomentum.toFixed(1)}%`}</small></div>
+            <div class="marketing-kpi"><span>측정 가능 유입</span><strong>${total.channelPairsMeasured ? formatMetric(total.visits) : '—'}</strong><small>방문자가 확보된 채널 합계</small></div>
             <div class="marketing-kpi"><span>총 매출</span><strong>${formatWon(total.revenue)}</strong><small>카페24·쿠팡·스마트스토어</small></div>
             <div class="marketing-kpi"><span>광고비</span><strong>${formatWon(total.ad_spend)}</strong><small>선택 기간 합계</small></div>
             <div class="marketing-kpi"><span>ROAS</span><strong>${roas.toFixed(0)}%</strong><small>매출 ÷ 광고비</small></div>
-            <div class="marketing-kpi accent"><span>구매 전환율</span><strong>${conversion.toFixed(1)}%</strong><small>목표 10%</small></div>
+            <div class="marketing-kpi accent"><span>구매 전환율</span><strong>${health.conversionRate === null ? '—' : `${health.conversionRate.toFixed(1)}%`}</strong><small>측정 채널 목표 10%</small></div>
         </section>
 
         <section class="metric-product-grid">
@@ -1036,10 +1340,129 @@ function renderFunnelDashboardView() {
                 ${renderMarketingDailyTable(metrics)}
             </div>
             <div class="marketing-section-card diagnosis-card">
-                <div class="marketing-section-title"><div><span>CHECK POINT</span><h2>오늘의 진단</h2></div><i class="ri-stethoscope-line"></i></div>
-                <div class="diagnosis-list">${renderMarketingDiagnosis(total)}</div>
+                <div class="marketing-section-title"><div><span>CHECK POINT</span><h2>선택 기간 진단</h2></div><i class="ri-stethoscope-line"></i></div>
+                <div class="diagnosis-list">${renderMarketingDiagnosis(health)}</div>
             </div>
         </section>
+    </main>`;
+}
+
+function renderIndexCard(label, value, description, icon) {
+    const status = getIndexStatus(value);
+    const statusLabel = { danger: '집중 필요', stable: '안정', excellent: '우수', unknown: '데이터 필요' }[status];
+    return `
+    <div class="marketing-index-card ${status}">
+        <div><i class="${icon}"></i><span>${label}</span><b>${statusLabel}</b></div>
+        <strong>${formatIndex(value)}</strong>
+        <small>${description}</small>
+    </div>`;
+}
+
+function getOkrPeriod(periodType) {
+    const reference = new Date(`${kstDateString(-1)}T00:00:00`);
+    if (periodType === 'quarter') {
+        const startMonth = Math.floor(reference.getMonth() / 3) * 3;
+        return {
+            start: new Date(reference.getFullYear(), startMonth, 1),
+            end: new Date(reference.getFullYear(), startMonth + 3, 0),
+            label: `${reference.getFullYear()}년 ${Math.floor(reference.getMonth() / 3) + 1}분기`,
+        };
+    }
+    return {
+        start: new Date(reference.getFullYear(), 0, 1),
+        end: new Date(reference.getFullYear(), 11, 31),
+        label: `${reference.getFullYear()}년`,
+    };
+}
+
+function getOkrTarget(periodType, periodStart) {
+    const brands = getSelectedBrands();
+    const selectedIds = getSelectedProductIds();
+    const exact = state.marketingTargets.filter(target =>
+        target.period_type === periodType &&
+        target.period_start === localDateString(periodStart) &&
+        ((target.scope_type === 'brand' && brands.includes(target.scope_key)) ||
+         (target.scope_type === 'product' && selectedIds.has(target.scope_key)))
+    );
+    if (exact.length) {
+        return exact.reduce((total, target) => ({
+            content_views_target: total.content_views_target + metricNumber(target.content_views_target),
+            orders_target: total.orders_target + metricNumber(target.orders_target),
+            revenue_target: total.revenue_target + metricNumber(target.revenue_target),
+            ad_spend_budget: total.ad_spend_budget + metricNumber(target.ad_spend_budget),
+        }), { content_views_target: 0, orders_target: 0, revenue_target: 0, ad_spend_budget: 0 });
+    }
+    const monthly = getMonthTarget();
+    const multiplier = periodType === 'quarter' ? 3 : 12;
+    return { content_views_target: metricNumber(monthly.content_views_target) * multiplier, orders_target: 0, revenue_target: 0, ad_spend_budget: 0 };
+}
+
+function renderOkrMetric(label, actual, target, formatter = formatMetric) {
+    const hasTarget = target > 0;
+    const rate = hasTarget ? percent(actual, target) : null;
+    return `
+    <div class="okr-metric">
+        <span>${label}</span>
+        <strong>${formatter(actual)}</strong>
+        <small>${hasTarget ? `목표 ${formatter(target)} · ${rate.toFixed(1)}%` : '목표 설정 필요'}</small>
+        <div class="okr-progress"><i style="width:${Math.min(rate || 0, 100)}%"></i></div>
+    </div>`;
+}
+
+function renderOkrPeriodCard(periodType) {
+    const period = getOkrPeriod(periodType);
+    const referenceDate = new Date(`${kstDateString(-1)}T00:00:00`);
+    const periodMetrics = getMetricsInDateRange(localDateString(period.start), localDateString(referenceDate));
+    const total = aggregateMarketingMetrics(periodMetrics);
+    const target = getOkrTarget(periodType, period.start);
+    const elapsedDays = Math.max(1, Math.ceil((referenceDate - period.start) / 86400000) + 1);
+    const totalDays = Math.ceil((period.end - period.start) / 86400000) + 1;
+    const forecastViews = Math.round((total.content_views / elapsedDays) * totalDays);
+    const remainingViews = Math.max(0, target.content_views_target - total.content_views);
+    const remainingDays = Math.max(1, totalDays - elapsedDays);
+
+    return `
+    <section class="marketing-section-card okr-period-card">
+        <div class="marketing-section-title">
+            <div><span>${periodType.toUpperCase()} OKR</span><h2>${period.label}</h2></div>
+            <i class="ri-flag-line"></i>
+        </div>
+        <div class="okr-grid">
+            ${renderOkrMetric('콘텐츠 노출', total.content_views, target.content_views_target)}
+            ${renderOkrMetric('판매량', total.orders, target.orders_target)}
+            ${renderOkrMetric('매출', total.revenue, target.revenue_target, formatWon)}
+            ${renderOkrMetric('광고비', total.ad_spend, target.ad_spend_budget, formatWon)}
+        </div>
+        <div class="okr-forecast">
+            <span><b>${formatMetric(forecastViews)}</b> 현재 속도 예상 노출</span>
+            <span><b>${formatMetric(Math.ceil(remainingViews / remainingDays))}</b> 목표 달성에 필요한 일평균 노출</span>
+        </div>
+    </section>`;
+}
+
+function renderOkrDashboardView() {
+    const brands = [...new Set(state.marketingProducts.map(product => product.brand))];
+    return `
+    ${renderNavbar()}
+    <main class="internal-dashboard">
+        <section class="internal-hero">
+            <div><span class="eyebrow"><i class="ri-flag-line"></i> PERFORMANCE OKR</span><h1>분기·연간 목표를 <span>숫자로</span></h1><p>일별 원천 데이터로 목표 달성률과 필요한 실행량을 계산합니다.</p></div>
+        </section>
+        <section class="marketing-view-switch">
+            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
+            <button class="active" onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
+        </section>
+        <section class="marketing-toolbar">
+            <div class="marketing-product-filter">
+                <button class="${state.selectedMarketingProduct === 'all' ? 'active' : ''}" onclick="selectMarketingProduct('all')">전체 브랜드</button>
+                ${brands.map(brand => `<button class="${state.selectedMarketingProduct === `brand:${brand}` ? 'active' : ''}" onclick="selectMarketingBrand('${encodeURIComponent(brand)}')">${escapeHtml(brand)}</button>`).join('')}
+            </div>
+        </section>
+        <div class="okr-periods">
+            ${renderOkrPeriodCard('quarter')}
+            ${renderOkrPeriodCard('year')}
+        </div>
     </main>`;
 }
 
@@ -1048,9 +1471,14 @@ function selectMarketingProduct(productId) {
     renderApp();
 }
 
+function selectMarketingBrand(encodedBrand) {
+    state.selectedMarketingProduct = `brand:${decodeURIComponent(encodedBrand)}`;
+    renderApp();
+}
+
 function setMarketingView(view) {
     state.marketingView = view;
-    if (view === 'report' && state.selectedMarketingProduct === 'all') {
+    if (view === 'report' && !state.marketingProducts.some(product => product.id === state.selectedMarketingProduct)) {
         state.selectedMarketingProduct = state.marketingProducts[0]?.id || 'all';
     }
     renderApp();
@@ -1090,7 +1518,7 @@ function showGoogleSheetImportModal() {
         <div class="modal-body">
             <div class="sheet-import-info">
                 <i class="ri-file-excel-2-line"></i>
-                <div><strong>8월 매출 시트</strong><span>4개 제품의 날짜별 검색량·유입·판매·매출·광고비를 가져옵니다.</span></div>
+                <div><strong>자동화 전환용 임시 가져오기</strong><span>자동 수집 전까지 시트의 입력된 항목만 보완하며 기존 API 데이터는 덮지 않습니다.</span></div>
             </div>
             <form onsubmit="handleGoogleSheetImport(event)">
                 <div class="form-group">
@@ -1114,6 +1542,10 @@ function parseSheetNumber(value) {
     const normalized = String(value).replace(/[₩원,\s]/g, '');
     const number = Number(normalized.replace(/[^\d.-]/g, ''));
     return Number.isFinite(number) ? number : 0;
+}
+
+function hasSheetValue(value) {
+    return value !== null && value !== undefined && String(value).trim() !== '';
 }
 
 function parseKeywordSearchValue(value) {
@@ -1161,10 +1593,17 @@ function parseGoogleSheetMetrics(payload) {
 
         const findRow = (column, labels) => blockRows.find(row => labels.includes(normalizeSheetLabel(row[column])));
         const siteVisitsRow = findRow(titleColumn, ['자사몰유입수']);
+        const blogViewsRow = findRow(titleColumn, ['블로그방문자수', '블로그조회수']) || findRow(subLabelColumn, ['블로그방문자수', '블로그조회수']);
+        const cafeViewsRow = findRow(titleColumn, ['카페글조회수', '카페조회수']) || findRow(subLabelColumn, ['카페글조회수', '카페조회수']);
+        const smartstoreVisitsRow = findRow(titleColumn, ['스마트스토어유입수', '스마트스토어방문자수']) || findRow(subLabelColumn, ['스마트스토어유입수', '스마트스토어방문자수']);
+        const coupangVisitsRow = findRow(titleColumn, ['쿠팡유입수', '쿠팡방문자수']) || findRow(subLabelColumn, ['쿠팡유입수', '쿠팡방문자수']);
         const cafe24Row = findRow(subLabelColumn, ['자사몰']);
         const smartstoreRow = findRow(subLabelColumn, ['스마트스토어']);
         const coupangRows = blockRows.filter(row => ['쿠팡', '쿠팡윙', '쿠팡그로스'].includes(normalizeSheetLabel(row[subLabelColumn])));
         const dailyRevenueRow = findRow(subLabelColumn, ['일매출']);
+        const cafe24RevenueRow = findRow(titleColumn, ['자사몰매출']) || findRow(subLabelColumn, ['자사몰매출']);
+        const smartstoreRevenueRow = findRow(titleColumn, ['스마트스토어매출']) || findRow(subLabelColumn, ['스마트스토어매출']);
+        const coupangRevenueRow = findRow(titleColumn, ['쿠팡매출']) || findRow(subLabelColumn, ['쿠팡매출']);
         const dailyAdSpendRow = findRow(subLabelColumn, ['일광고비']);
         const keywordHeaderIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '키워드검색량');
         const siteVisitsIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '자사몰유입수');
@@ -1176,29 +1615,60 @@ function parseGoogleSheetMetrics(payload) {
             const metricDate = parseSheetMetricDate(dateRow[column], year);
             if (!metricDate) continue;
             const sourceValues = [
-                siteVisitsRow?.[column], cafe24Row?.[column], smartstoreRow?.[column],
-                dailyRevenueRow?.[column], dailyAdSpendRow?.[column],
+                blogViewsRow?.[column], cafeViewsRow?.[column], siteVisitsRow?.[column],
+                smartstoreVisitsRow?.[column], coupangVisitsRow?.[column],
+                cafe24Row?.[column], smartstoreRow?.[column], ...coupangRows.map(row => row[column]),
+                dailyRevenueRow?.[column], cafe24RevenueRow?.[column],
+                smartstoreRevenueRow?.[column], coupangRevenueRow?.[column], dailyAdSpendRow?.[column],
                 ...keywordRows.map(row => row[column]),
             ];
-            if (!sourceValues.some(value => String(value || '').trim() !== '')) continue;
+            if (!sourceValues.some(hasSheetValue)) continue;
 
-            records.push({
-                product_slug: definition.slug,
-                metric_date: metricDate,
-                keyword_search_volume: keywordRows.reduce((sum, row) => sum + parseKeywordSearchValue(row[column]), 0),
-                site_visits: Math.max(0, parseSheetNumber(siteVisitsRow?.[column])),
-                cafe24_orders: Math.max(0, parseSheetNumber(cafe24Row?.[column])),
-                smartstore_orders: Math.max(0, parseSheetNumber(smartstoreRow?.[column])),
-                coupang_orders: Math.max(0, coupangRows.reduce((sum, row) => sum + parseSheetNumber(row[column]), 0)),
-                cafe24_revenue: Math.max(0, parseSheetNumber(dailyRevenueRow?.[column])),
-                coupang_revenue: 0,
-                smartstore_revenue: 0,
-                ad_spend: Math.max(0, parseSheetNumber(dailyAdSpendRow?.[column])),
-            });
+            const record = { product_slug: definition.slug, metric_date: metricDate };
+            const completeness = {};
+            const assign = (key, value, parser = parseSheetNumber) => {
+                if (!hasSheetValue(value)) return;
+                record[key] = Math.max(0, parser(value));
+                completeness[key] = true;
+            };
+            if (keywordRows.some(row => hasSheetValue(row[column]))) {
+                record.keyword_search_volume = keywordRows.reduce((sum, row) => sum + parseKeywordSearchValue(row[column]), 0);
+                completeness.keyword_search_volume = true;
+            }
+            assign('blog_views', blogViewsRow?.[column]);
+            assign('cafe_views', cafeViewsRow?.[column]);
+            assign('cafe24_visits', siteVisitsRow?.[column]);
+            assign('smartstore_visits', smartstoreVisitsRow?.[column]);
+            assign('coupang_visits', coupangVisitsRow?.[column]);
+            assign('cafe24_orders', cafe24Row?.[column]);
+            assign('smartstore_orders', smartstoreRow?.[column]);
+            if (coupangRows.some(row => hasSheetValue(row[column]))) {
+                record.coupang_orders = Math.max(0, coupangRows.reduce((sum, row) => sum + parseSheetNumber(row[column]), 0));
+                completeness.coupang_orders = true;
+            }
+            assign('cafe24_revenue', cafe24RevenueRow?.[column]);
+            assign('smartstore_revenue', smartstoreRevenueRow?.[column]);
+            assign('coupang_revenue', coupangRevenueRow?.[column]);
+            assign('reported_total_revenue', dailyRevenueRow?.[column]);
+            assign('ad_spend', dailyAdSpendRow?.[column]);
+            record.data_completeness = completeness;
+            records.push(record);
         }
     });
 
     return records;
+}
+
+async function mergeDailyMarketingMetric(productId, metricDate, patch, source, sourceDetails, collectionStatus) {
+    const { error } = await sb.rpc('merge_daily_marketing_metric', {
+        p_product_id: productId,
+        p_metric_date: metricDate,
+        p_patch: patch,
+        p_source: source,
+        p_source_details: sourceDetails || {},
+        p_collection_status: collectionStatus,
+    });
+    if (error) throw error;
 }
 
 async function handleGoogleSheetImport(event) {
@@ -1219,23 +1689,27 @@ async function handleGoogleSheetImport(event) {
         const productMap = new Map(state.marketingProducts.map(product => [product.slug, product.id]));
         const records = parsed
             .filter(record => productMap.has(record.product_slug))
-            .map(({ product_slug, ...record }) => ({
-                ...record,
+            .map(({ product_slug, metric_date, ...patch }) => ({
+                patch,
+                metric_date,
                 product_id: productMap.get(product_slug),
-                source: 'import',
-                source_details: {
-                    provider: 'google_sheets',
-                    sheet_name: payload.sheetName,
-                    synced_at: payload.updatedAt,
-                },
-                created_by: state.user.id,
-                updated_at: new Date().toISOString(),
             }));
 
         if (!records.length) throw new Error('가져올 제품 데이터를 찾지 못했습니다');
         button.innerHTML = '<span class="spinner"></span> 저장 중...';
-        const { error } = await sb.from('daily_marketing_metrics').upsert(records, { onConflict: 'product_id,metric_date' });
-        if (error) throw error;
+        await Promise.all(records.map(record => mergeDailyMarketingMetric(
+            record.product_id,
+            record.metric_date,
+            record.patch,
+            'import',
+            {
+                provider: 'google_sheets',
+                sheet_name: payload.sheetName,
+                synced_at: payload.updatedAt,
+                temporary_fallback: true,
+            },
+            'imported'
+        )));
 
         if (remember) localStorage.setItem('jangsai-sheet-token', token);
         else localStorage.removeItem('jangsai-sheet-token');
@@ -1258,7 +1732,7 @@ function showDailyMetricModal() {
         showToast('먼저 마케팅 DB 마이그레이션을 적용해주세요', 'warning');
         return;
     }
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateString(new Date());
     const selected = state.selectedMarketingProduct === 'all' ? state.marketingProducts[0]?.id : state.selectedMarketingProduct;
     showModal(`
         <div class="modal-header">
@@ -1274,23 +1748,24 @@ function showDailyMetricModal() {
                     <div class="form-group"><label class="form-label">기준일</label><input class="form-input" type="date" id="metric-date" value="${today}" required></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label class="form-label">콘텐츠 조회·노출</label><input class="form-input" type="number" id="metric-content-views" min="0" value="0"></div>
-                    <div class="form-group"><label class="form-label">브랜드 검색량</label><input class="form-input" type="number" id="metric-search" min="0" value="0"></div>
+                    <div class="form-group"><label class="form-label">블로그 방문자 수</label><input class="form-input" type="number" id="metric-blog-views" min="0" placeholder="미수집이면 비워두기"></div>
+                    <div class="form-group"><label class="form-label">카페 글 조회수</label><input class="form-input" type="number" id="metric-cafe-views" min="0" placeholder="미수집이면 비워두기"></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label class="form-label">자사몰 전체 유입</label><input class="form-input" type="number" id="metric-visits" min="0" value="0"></div>
-                    <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" value="0"></div>
+                    <div class="form-group"><label class="form-label">브랜드 검색량</label><input class="form-input" type="number" id="metric-search" min="0" placeholder="미수집이면 비워두기"></div>
+                    <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" placeholder="미수집이면 비워두기"></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label class="form-label">UTM 추적 유입</label><input class="form-input" type="number" id="metric-tracked-visits" min="0" value="0"><div class="form-hint">10·10 유입률 계산에 사용</div></div>
-                    <div class="form-group"><label class="form-label">UTM 추적 구매</label><input class="form-input" type="number" id="metric-tracked-orders" min="0" value="0"><div class="form-hint">10·10 구매전환율 계산에 사용</div></div>
+                    <div class="form-group"><label class="form-label">UTM 추적 유입</label><input class="form-input" type="number" id="metric-tracked-visits" min="0" placeholder="선택 항목"><div class="form-hint">원고별 보조 분석에 사용</div></div>
+                    <div class="form-group"><label class="form-label">UTM 추적 구매</label><input class="form-input" type="number" id="metric-tracked-orders" min="0" placeholder="선택 항목"><div class="form-hint">원고별 보조 분석에 사용</div></div>
                 </div>
                 <div class="channel-entry-grid">
                     ${['cafe24', 'coupang', 'smartstore'].map((channel, index) => `
                     <div class="channel-entry">
-                        <strong>${['카페24', '쿠팡', '스마트스토어'][index]}</strong>
-                        <input class="form-input" type="number" id="metric-${channel}-orders" min="0" value="0" placeholder="판매량">
-                        <input class="form-input" type="number" id="metric-${channel}-revenue" min="0" value="0" placeholder="매출">
+                        <strong>${['자사몰', '쿠팡', '스마트스토어'][index]}</strong>
+                        <input class="form-input" type="number" id="metric-${channel}-visits" min="0" placeholder="방문자 수">
+                        <input class="form-input" type="number" id="metric-${channel}-orders" min="0" placeholder="판매량">
+                        <input class="form-input" type="number" id="metric-${channel}-revenue" min="0" placeholder="매출">
                     </div>`).join('')}
                 </div>
                 <button type="submit" class="btn btn-primary btn-block mt-3" id="metric-submit"><i class="ri-save-line"></i> 저장하기</button>
@@ -1303,30 +1778,43 @@ async function handleDailyMetricSubmit(event) {
     const button = $('#metric-submit');
     button.disabled = true;
     button.innerHTML = '<span class="spinner"></span> 저장 중...';
-    const value = id => metricNumber($(`#${id}`)?.value);
-
-    const record = {
-        product_id: $('#metric-product').value,
-        metric_date: $('#metric-date').value,
-        content_views: value('metric-content-views'),
-        keyword_search_volume: value('metric-search'),
-        site_visits: value('metric-visits'),
-        tracked_visits: value('metric-tracked-visits'),
-        tracked_orders: value('metric-tracked-orders'),
-        ad_spend: value('metric-ad-spend'),
-        cafe24_orders: value('metric-cafe24-orders'),
-        cafe24_revenue: value('metric-cafe24-revenue'),
-        coupang_orders: value('metric-coupang-orders'),
-        coupang_revenue: value('metric-coupang-revenue'),
-        smartstore_orders: value('metric-smartstore-orders'),
-        smartstore_revenue: value('metric-smartstore-revenue'),
-        source: 'manual',
-        created_by: state.user.id,
-        updated_at: new Date().toISOString(),
+    const patch = {};
+    const completeness = {};
+    const assign = (key, id) => {
+        const input = $(`#${id}`);
+        if (!input || input.value === '') return;
+        patch[key] = Math.max(0, metricNumber(input.value));
+        completeness[key] = true;
     };
+    assign('blog_views', 'metric-blog-views');
+    assign('cafe_views', 'metric-cafe-views');
+    assign('keyword_search_volume', 'metric-search');
+    assign('tracked_visits', 'metric-tracked-visits');
+    assign('tracked_orders', 'metric-tracked-orders');
+    assign('ad_spend', 'metric-ad-spend');
+    ['cafe24', 'coupang', 'smartstore'].forEach(channel => {
+        assign(`${channel}_visits`, `metric-${channel}-visits`);
+        assign(`${channel}_orders`, `metric-${channel}-orders`);
+        assign(`${channel}_revenue`, `metric-${channel}-revenue`);
+    });
+    patch.data_completeness = completeness;
 
-    const { error } = await sb.from('daily_marketing_metrics').upsert(record, { onConflict: 'product_id,metric_date' });
-    if (error) {
+    if (!Object.keys(completeness).length) {
+        showToast('보완할 숫자를 하나 이상 입력해주세요', 'warning');
+        button.disabled = false;
+        button.innerHTML = '<i class="ri-save-line"></i> 저장하기';
+        return;
+    }
+    try {
+        await mergeDailyMarketingMetric(
+            $('#metric-product').value,
+            $('#metric-date').value,
+            patch,
+            'manual',
+            { provider: 'manual_fallback', entered_at: new Date().toISOString() },
+            'manual'
+        );
+    } catch (error) {
         showToast('저장 실패: ' + error.message, 'error');
         button.disabled = false;
         button.innerHTML = '<i class="ri-save-line"></i> 저장하기';

@@ -2126,6 +2126,87 @@ textarea.form-input {
     font-size: 0.76rem;
 }
 
+.ten-ten-index.danger strong { color: var(--error); }
+.ten-ten-index.stable strong { color: var(--success); }
+.ten-ten-index.excellent strong { color: var(--info); }
+.ten-ten-index.unknown strong { color: var(--text-muted); }
+
+.marketing-index-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 22px;
+}
+
+.marketing-index-card {
+    padding: 17px;
+    background: rgba(5, 10, 21, 0.52);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+}
+
+.marketing-index-card > div {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.marketing-index-card > div span {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.marketing-index-card > div b {
+    margin-left: auto;
+    padding: 3px 7px;
+    border-radius: var(--radius-full);
+    font-size: 0.62rem;
+}
+
+.marketing-index-card > strong,
+.marketing-index-card > small {
+    display: block;
+}
+
+.marketing-index-card > strong {
+    margin: 10px 0 3px;
+    font-size: 1.8rem;
+}
+
+.marketing-index-card > small {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+}
+
+.marketing-index-card.danger {
+    border-color: rgba(239, 68, 68, 0.38);
+    background: rgba(239, 68, 68, 0.07);
+}
+.marketing-index-card.danger > strong,
+.marketing-index-card.danger > div i { color: var(--error); }
+.marketing-index-card.danger > div b { color: var(--error); background: var(--error-bg); }
+
+.marketing-index-card.stable {
+    border-color: rgba(16, 185, 129, 0.3);
+    background: rgba(16, 185, 129, 0.06);
+}
+.marketing-index-card.stable > strong,
+.marketing-index-card.stable > div i { color: var(--success); }
+.marketing-index-card.stable > div b { color: var(--success); background: var(--success-bg); }
+
+.marketing-index-card.excellent {
+    border-color: rgba(59, 130, 246, 0.32);
+    background: rgba(59, 130, 246, 0.06);
+}
+.marketing-index-card.excellent > strong,
+.marketing-index-card.excellent > div i { color: var(--info); }
+.marketing-index-card.excellent > div b { color: var(--info); background: var(--info-bg); }
+
+.marketing-index-card.unknown > strong,
+.marketing-index-card.unknown > div i { color: var(--text-muted); }
+.marketing-index-card.unknown > div b { color: var(--text-muted); background: rgba(255, 255, 255, 0.05); }
+
 .funnel-flow {
     display: grid;
     grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
@@ -2410,6 +2491,76 @@ textarea.form-input {
 .diagnosis-item.danger > i { color: var(--error); }
 .diagnosis-item.neutral > i { color: var(--info); }
 
+.okr-periods {
+    display: grid;
+    gap: 18px;
+}
+
+.okr-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+}
+
+.okr-metric {
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+}
+
+.okr-metric span,
+.okr-metric strong,
+.okr-metric small {
+    display: block;
+}
+
+.okr-metric span,
+.okr-metric small {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+.okr-metric strong {
+    margin: 7px 0 4px;
+    font-size: 1.25rem;
+}
+
+.okr-progress {
+    height: 6px;
+    margin-top: 12px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-full);
+}
+
+.okr-progress i {
+    display: block;
+    height: 100%;
+    background: var(--accent-gradient);
+    border-radius: inherit;
+}
+
+.okr-forecast {
+    display: flex;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.okr-forecast span {
+    flex: 1;
+    padding: 11px 13px;
+    color: var(--text-muted);
+    background: rgba(99, 102, 241, 0.06);
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+}
+
+.okr-forecast b {
+    margin-right: 5px;
+    color: var(--accent-light);
+}
+
 .channel-entry-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -2567,8 +2718,17 @@ textarea.form-input {
     }
 
     .marketing-kpis,
-    .metric-product-grid {
+    .metric-product-grid,
+    .okr-grid {
         grid-template-columns: repeat(2, 1fr);
+    }
+
+    .marketing-index-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .okr-forecast {
+        flex-direction: column;
     }
 
     .marketing-bottom-grid {
@@ -2626,7 +2786,8 @@ textarea.form-input {
     }
 
     .marketing-kpis,
-    .metric-product-grid {
+    .metric-product-grid,
+    .okr-grid {
         grid-template-columns: 1fr;
     }
 
