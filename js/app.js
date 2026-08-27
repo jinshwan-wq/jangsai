@@ -38,8 +38,8 @@ const DEFAULT_MARKETING_PRODUCTS = [
 const PRODUCT_KEYWORDS = {
     'innerium-gala431': ['이너리움 갈라431', '갈라431', '이너리움'],
     'innerium-minti431': ['이너리움 민티431', '민티431', '이너리움'],
-    'yural-tonggam-cream': ['유랄 통감크림', '통감크림'],
-    'yural-myeongga-bonhwan': ['유랄 명가본환', '명가본환'],
+    'yural-tonggam-cream': ['유랄통감크림'],
+    'yural-myeongga-bonhwan': ['유랄명가본환'],
 };
 
 const MARKETING_INDEX_RULES = {
@@ -53,8 +53,7 @@ const MARKETING_INDEX_RULES = {
 const MARKETING_CHANNELS = [
     { id: 'cafe24', label: '자사몰', visits: 'cafe24_visits', legacyVisits: 'site_visits', orders: 'cafe24_orders', revenue: 'cafe24_revenue' },
     { id: 'smartstore', label: '스마트스토어', visits: 'smartstore_visits', orders: 'smartstore_orders', revenue: 'smartstore_revenue' },
-    { id: 'coupang_wing', label: '쿠팡 윙', visits: 'coupang_wing_visits', orders: 'coupang_wing_orders', revenue: 'coupang_wing_revenue' },
-    { id: 'coupang_growth', label: '로켓그로스', visits: 'coupang_growth_visits', orders: 'coupang_growth_orders', revenue: 'coupang_growth_revenue' },
+    { id: 'coupang', label: '쿠팡', visits: 'coupang_visits', orders: 'coupang_orders', revenue: 'coupang_revenue', combinedCoupang: true },
 ];
 
 // --- 앱 상태 ---
@@ -735,6 +734,13 @@ function getMetricExposure(metric) {
 }
 
 function getChannelVisits(metric, channel) {
+    if (channel.combinedCoupang) {
+        const value = getCoupangMetric(metric, 'visits');
+        const hasValue = nullableMetricNumber(metric?.coupang_visits) !== null ||
+            nullableMetricNumber(metric?.coupang_wing_visits) !== null ||
+            nullableMetricNumber(metric?.coupang_growth_visits) !== null;
+        return hasValue ? value : null;
+    }
     const value = nullableMetricNumber(metric?.[channel.visits]);
     if (value !== null) return value;
     if (channel.legacyVisits && metricNumber(metric?.[channel.legacyVisits]) > 0) return metricNumber(metric[channel.legacyVisits]);
@@ -747,7 +753,17 @@ function hasCollectedMetric(metric, key) {
 }
 
 function isChannelPairMeasured(metric, channel) {
+    if (channel.combinedCoupang) {
+        const hasOrders = hasCollectedMetric(metric, 'coupang_orders') ||
+            hasCollectedMetric(metric, 'coupang_wing_orders') ||
+            hasCollectedMetric(metric, 'coupang_growth_orders');
+        return getChannelVisits(metric, channel) !== null && hasOrders;
+    }
     return getChannelVisits(metric, channel) !== null && hasCollectedMetric(metric, channel.orders);
+}
+
+function getChannelOrders(metric, channel) {
+    return channel.combinedCoupang ? getCoupangMetric(metric, 'orders') : metricNumber(metric?.[channel.orders]);
 }
 
 function getSelectedProductIds() {
@@ -814,7 +830,7 @@ function aggregateMarketingMetrics(metrics) {
             total.channelPairsExpected++;
             if (visits !== null && isChannelPairMeasured(metric, channel)) {
                 total.visits += visits;
-                total.attributableOrders += metricNumber(metric[channel.orders]);
+                total.attributableOrders += getChannelOrders(metric, channel);
                 total.channelPairsMeasured++;
                 total.measuredChannels.add(channel.label);
             } else {
@@ -1162,11 +1178,35 @@ function reportMetricValue(metric, key, formatter = formatMetric) {
     return formatter(metricNumber(metric[key]));
 }
 
+function parseRenderedMetric(value) {
+    const text = String(value || '').replace(/<[^>]*>/g, '').trim();
+    if (!text || text.includes('—')) return null;
+    const number = Number(text.replace(/,/g, '').replace(/[^\d.-]/g, ''));
+    return Number.isFinite(number) ? number : null;
+}
+
+function renderMetricTrend(currentValue, previousValue) {
+    const current = parseRenderedMetric(currentValue);
+    const previous = parseRenderedMetric(previousValue);
+    if (current === null || previous === null) return '';
+    const difference = current - previous;
+    if (difference === 0) return '<small class="metric-trend same">― 변동없음</small>';
+    const isPercent = String(currentValue).includes('%');
+    const isWon = String(currentValue).includes('원');
+    const amount = isPercent ? `${Math.abs(difference).toFixed(1)}%p` : `${formatMetric(Math.abs(difference))}${isWon ? '원' : ''}`;
+    return `<small class="metric-trend ${difference > 0 ? 'up' : 'down'}">${difference > 0 ? '▲ 증가' : '▼ 감소'} ${amount}</small>`;
+}
+
 function renderReportRow(label, dates, metricsByDate, valueGetter, options = {}) {
     return `
     <tr class="${options.total ? 'report-total-row' : ''}">
         <th>${options.indent ? '<span class="report-indent">└</span>' : ''}${escapeHtml(label)}</th>
-        ${dates.map(date => `<td>${valueGetter(metricsByDate.get(date), date)}</td>`).join('')}
+        ${dates.map((date, index) => {
+            const currentValue = valueGetter(metricsByDate.get(date), date);
+            const previousDate = dates[index + 1];
+            const previousValue = previousDate ? valueGetter(metricsByDate.get(previousDate), previousDate) : null;
+            return `<td><span class="report-cell-value">${currentValue}</span>${renderMetricTrend(currentValue, previousValue)}</td>`;
+        }).join('')}
     </tr>`;
 }
 
@@ -1175,9 +1215,15 @@ function renderDailyReportTable(product) {
     const productMetrics = state.marketingMetrics.filter(metric => metric.product_id === product.id);
     const metricsByDate = new Map(productMetrics.map(metric => [metric.metric_date, metric]));
     const productKeywordMetrics = state.dailyKeywordMetrics.filter(metric => metric.product_id === product.id);
-    const keywordMetricsByDate = new Map(productKeywordMetrics.map(metric => [`${metric.metric_date}:${metric.keyword}`, metric]));
+    const productSearchSnapshots = state.marketingSearchSnapshots.filter(metric => metric.product_id === product.id && metric.keyword !== '기존 합계');
+    const keywordMetricsByDate = new Map(productSearchSnapshots.map(metric => [
+        `${metric.snapshot_date}:${metric.keyword}`,
+        { ...metric, metric_date: metric.snapshot_date },
+    ]));
+    productKeywordMetrics.forEach(metric => keywordMetricsByDate.set(`${metric.metric_date}:${metric.keyword}`, metric));
     const keywordNames = [...new Set([
         ...productKeywordMetrics.map(metric => metric.keyword),
+        ...productSearchSnapshots.map(metric => metric.keyword),
         ...(PRODUCT_KEYWORDS[product.slug] || [product.name]),
     ])].filter(keyword => keyword !== '기존 합계');
     const monthAggregate = date => {
@@ -1188,7 +1234,7 @@ function renderDailyReportTable(product) {
 
     return `
     <div class="excel-report-scroll">
-        <table class="excel-report-table product-theme-${product.sort_order || 1}">
+        <table class="excel-report-table product-theme-${product.sort_order || 1}" style="min-width:${230 + (dates.length * 150)}px">
             <thead>
                 <tr>
                     <th class="report-product-cell">
@@ -1220,8 +1266,7 @@ function renderDailyReportTable(product) {
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[1]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[1]))) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('로켓그로스', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[3]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[3]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('쿠팡', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('측정 유입 합계', dates, metricsByDate, metric => {
                     if (!metric) return '<span class="report-no-data">—</span>';
                     const day = aggregateMarketingMetrics([metric]);
@@ -1233,10 +1278,6 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => reportMetricValue(metric, 'smartstore_orders'), { indent: true })}
                 ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_wing_orders) !== null ? formatMetric(metric.coupang_wing_orders) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('로켓그로스', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_growth_orders) !== null ? formatMetric(metric.coupang_growth_orders) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('쿠팡 기존 미분류', dates, metricsByDate, metric => {
-                    if (!metric || nullableMetricNumber(metric.coupang_wing_orders) !== null || nullableMetricNumber(metric.coupang_growth_orders) !== null) return '<span class="report-no-data">—</span>';
-                    return formatMetric(metric.coupang_orders);
-                }, { indent: true })}
                 ${renderReportRow('판매량 총합', dates, metricsByDate, metric => metric ? formatMetric(getMetricSales(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-money-dollar-circle-line"></i> 매출</th></tr>
@@ -1247,14 +1288,6 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('일 광고비', dates, metricsByDate, metric => reportMetricValue(metric, 'ad_spend', won))}
                 ${renderReportRow('월 누적 광고비', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).ad_spend) : '<span class="report-no-data">—</span>', { total: true })}
 
-                <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-links-line"></i> 보조 추적</th></tr>
-                ${renderReportRow('UTM 추적 유입', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_visits'))}
-                ${renderReportRow('UTM 추적 구매', dates, metricsByDate, metric => reportMetricValue(metric, 'tracked_orders'))}
-                ${renderReportRow('전채널 측정 전환율', dates, metricsByDate, metric => {
-                    if (!metric) return '<span class="report-no-data">—</span>';
-                    const day = aggregateMarketingMetrics([metric]);
-                    return day.visits > 0 ? `${percent(day.attributableOrders, day.visits).toFixed(1)}%` : '<span class="report-no-data">—</span>';
-                }, { total: true })}
             </tbody>
         </table>
     </div>`;
@@ -1638,6 +1671,12 @@ function normalizeSheetLabel(value) {
     return String(value || '').replace(/\s+/g, '').toLowerCase();
 }
 
+function canonicalProductKeyword(productSlug, keyword) {
+    if (productSlug === 'yural-tonggam-cream') return '유랄통감크림';
+    if (productSlug === 'yural-myeongga-bonhwan') return '유랄명가본환';
+    return String(keyword || '').trim();
+}
+
 function parseGoogleSheetMetrics(payload) {
     const rows = payload.values || [];
     const year = new Date(payload.updatedAt || Date.now()).getFullYear();
@@ -1714,13 +1753,14 @@ function parseGoogleSheetMetrics(payload) {
                 record[key] = Math.max(0, parser(value));
                 completeness[key] = true;
             };
-            record.keyword_metrics = keywordRows
-                .filter(row => hasSheetValue(row[column]))
-                .map(row => ({
-                    keyword: String(row[subLabelColumn] || row[titleColumn] || '').trim(),
-                    search_volume: Math.max(0, parseKeywordSearchValue(row[column])),
-                }))
-                .filter(item => item.keyword);
+            const keywordMetrics = new Map();
+            keywordRows.filter(row => hasSheetValue(row[column])).forEach(row => {
+                const keyword = canonicalProductKeyword(definition.slug, row[subLabelColumn] || row[titleColumn]);
+                if (!keyword) return;
+                const value = Math.max(0, parseKeywordSearchValue(row[column]));
+                keywordMetrics.set(keyword, Math.max(value, keywordMetrics.get(keyword) || 0));
+            });
+            record.keyword_metrics = [...keywordMetrics].map(([keyword, search_volume]) => ({ keyword, search_volume }));
             assign('blog_views', blogViewsRow?.[column]);
             assign('cafe_views', cafeViewsRow?.[column]);
             assign('cafe24_visits', siteVisitsRow?.[column]);
@@ -1898,13 +1938,23 @@ function showDailyMetricModal() {
                     <div class="form-group"><label class="form-label">UTM 추적 구매</label><input class="form-input" type="number" id="metric-tracked-orders" min="0" placeholder="선택 항목"><div class="form-hint">원고별 보조 분석에 사용</div></div>
                 </div>
                 <div class="channel-entry-grid">
-                    ${['cafe24', 'smartstore', 'coupang_wing', 'coupang_growth'].map((channel, index) => `
+                    ${['cafe24', 'smartstore'].map((channel, index) => `
                     <div class="channel-entry">
-                        <strong>${['자사몰', '스마트스토어', '쿠팡 윙', '로켓그로스'][index]}</strong>
+                        <strong>${['자사몰', '스마트스토어'][index]}</strong>
                         <input class="form-input" type="number" id="metric-${channel}-visits" min="0" placeholder="방문자 수">
                         <input class="form-input" type="number" id="metric-${channel}-orders" min="0" placeholder="판매량">
                         <input class="form-input" type="number" id="metric-${channel}-revenue" min="0" placeholder="매출">
                     </div>`).join('')}
+                    <div class="channel-entry coupang-entry">
+                        <strong>쿠팡</strong>
+                        <input class="form-input" type="number" id="metric-coupang-visits" min="0" placeholder="통합 방문자 수">
+                        <small>쿠팡 윙</small>
+                        <input class="form-input" type="number" id="metric-coupang-wing-orders" min="0" placeholder="윙 판매량">
+                        <input class="form-input" type="number" id="metric-coupang-wing-revenue" min="0" placeholder="윙 매출">
+                        <small>로켓그로스</small>
+                        <input class="form-input" type="number" id="metric-coupang-growth-orders" min="0" placeholder="그로스 판매량">
+                        <input class="form-input" type="number" id="metric-coupang-growth-revenue" min="0" placeholder="그로스 매출">
+                    </div>
                 </div>
                 <button type="submit" class="btn btn-primary btn-block mt-3" id="metric-submit"><i class="ri-save-line"></i> 저장하기</button>
             </form>
@@ -1929,10 +1979,15 @@ async function handleDailyMetricSubmit(event) {
     assign('tracked_visits', 'metric-tracked-visits');
     assign('tracked_orders', 'metric-tracked-orders');
     assign('ad_spend', 'metric-ad-spend');
-    ['cafe24', 'smartstore', 'coupang_wing', 'coupang_growth'].forEach(channel => {
+    ['cafe24', 'smartstore'].forEach(channel => {
         assign(`${channel}_visits`, `metric-${channel}-visits`);
         assign(`${channel}_orders`, `metric-${channel}-orders`);
         assign(`${channel}_revenue`, `metric-${channel}-revenue`);
+    });
+    assign('coupang_visits', 'metric-coupang-visits');
+    ['coupang_wing', 'coupang_growth'].forEach(channel => {
+        assign(`${channel}_orders`, `metric-${channel.replace('_', '-')}-orders`);
+        assign(`${channel}_revenue`, `metric-${channel.replace('_', '-')}-revenue`);
     });
     patch.data_completeness = completeness;
     const keywordMetrics = [...document.querySelectorAll('.metric-keyword-volume')]

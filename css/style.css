@@ -1826,8 +1826,10 @@ textarea.form-input {
 
 .excel-report-table th,
 .excel-report-table td {
-    height: 48px;
+    height: 58px;
     padding: 11px 18px;
+    white-space: nowrap;
+    word-break: keep-all;
     border-right: 1px solid rgba(148, 163, 184, 0.11);
     border-bottom: 1px solid rgba(148, 163, 184, 0.11);
 }
@@ -1892,6 +1894,23 @@ textarea.form-input {
     font-weight: 650;
     font-variant-numeric: tabular-nums;
 }
+
+.report-cell-value {
+    display: block;
+    white-space: nowrap;
+}
+
+.metric-trend {
+    display: block;
+    margin-top: 4px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.metric-trend.up { color: var(--success); }
+.metric-trend.down { color: var(--error); }
+.metric-trend.same { color: var(--text-muted); }
 
 .excel-report-table tbody tr:not(.report-section-row):hover th,
 .excel-report-table tbody tr:not(.report-section-row):hover td {
@@ -2625,7 +2644,7 @@ textarea.form-input {
 
 .channel-entry-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 10px;
 }
 
@@ -2641,6 +2660,13 @@ textarea.form-input {
 
 .channel-entry strong {
     font-size: 0.78rem;
+}
+
+.channel-entry small {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    font-weight: 700;
 }
 
 .sr-only {
