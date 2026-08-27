@@ -8,6 +8,7 @@ const SUPABASE_KEY = 'sb_publishable_MTmIgPL7ilgjlb1tC92Mng_WExurSRL';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const EMAIL_DOMAIN = '@jangsai.local';
 const OWNER_EMAIL = 'kher2000@jangsai.local';
+const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbw_kV92ocY27UZGbnSJHhmYDlRK6gzqJDU76HV2VJAvybtmmRihz1vDthCGlvLvAC0/exec';
 
 // --- 등급별 색상 ---
 const ROLE_COLORS = {
@@ -63,9 +64,9 @@ const state = {
     marketingProducts: [],
     marketingMetrics: [],
     selectedMarketingProduct: 'all',
-    marketingRange: 7,
+    marketingPeriod: '7d',
     marketingView: 'report',
-    reportDays: 3,
+    reportPeriod: '3d',
     marketingDataReady: true,
 };
 
@@ -670,15 +671,35 @@ function getMetricRevenue(metric) {
 }
 
 function getVisibleMarketingMetrics() {
-    const cutoff = new Date();
-    cutoff.setHours(0, 0, 0, 0);
-    cutoff.setDate(cutoff.getDate() - state.marketingRange + 1);
-    const cutoffString = cutoff.toISOString().slice(0, 10);
+    const { from, to } = getPeriodBounds(state.marketingPeriod);
 
     return state.marketingMetrics.filter(metric =>
-        metric.metric_date >= cutoffString &&
+        metric.metric_date >= from &&
+        metric.metric_date <= to &&
         (state.selectedMarketingProduct === 'all' || metric.product_id === state.selectedMarketingProduct)
     );
+}
+
+function getPeriodBounds(period) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const from = new Date(today);
+    const to = new Date(today);
+
+    if (period === 'yesterday') {
+        from.setDate(from.getDate() - 1);
+        to.setDate(to.getDate() - 1);
+    } else if (period === 'week') {
+        const mondayOffset = (from.getDay() + 6) % 7;
+        from.setDate(from.getDate() - mondayOffset);
+    } else if (period === 'month') {
+        from.setDate(1);
+    } else {
+        const days = Number.parseInt(period, 10) || 1;
+        from.setDate(from.getDate() - days + 1);
+    }
+
+    return { from: localDateString(from), to: localDateString(to) };
 }
 
 function aggregateMarketingMetrics(metrics) {
@@ -794,13 +815,16 @@ function localDateString(date) {
     return `${year}-${month}-${day}`;
 }
 
-function getReportDates(count = state.reportDays) {
-    return Array.from({ length: count }, (_, index) => {
-        const date = new Date();
-        date.setHours(0, 0, 0, 0);
-        date.setDate(date.getDate() - index);
-        return localDateString(date);
-    });
+function getReportDates() {
+    const { from, to } = getPeriodBounds(state.reportPeriod);
+    const dates = [];
+    const cursor = new Date(`${to}T00:00:00`);
+    const first = new Date(`${from}T00:00:00`);
+    while (cursor >= first) {
+        dates.push(localDateString(cursor));
+        cursor.setDate(cursor.getDate() - 1);
+    }
+    return dates;
 }
 
 function getReportProduct() {
@@ -892,6 +916,7 @@ function renderInternalReportView() {
                 <p>기존 엑셀과 같은 순서로 최근 실적을 빠르게 비교합니다.</p>
             </div>
             <div class="internal-actions">
+                <button class="btn btn-secondary" onclick="showGoogleSheetImportModal()"><i class="ri-google-line"></i> 구글시트 가져오기</button>
                 <button class="btn btn-primary" onclick="showDailyMetricModal()"><i class="ri-add-line"></i> 오늘 숫자 입력</button>
             </div>
         </section>
@@ -908,9 +933,8 @@ function renderInternalReportView() {
                         <small>${escapeHtml(item.brand)}</small><strong>${escapeHtml(item.name)}</strong>
                     </button>`).join('')}
             </div>
-            <select class="filter-select" onchange="changeReportDays(this.value)">
-                <option value="3" ${state.reportDays === 3 ? 'selected' : ''}>최근 3일</option>
-                <option value="7" ${state.reportDays === 7 ? 'selected' : ''}>최근 7일</option>
+            <select class="filter-select" onchange="changeReportPeriod(this.value)">
+                ${renderPeriodOptions(state.reportPeriod, true)}
             </select>
         </section>
 
@@ -971,10 +995,8 @@ function renderFunnelDashboardView() {
                     <button class="${state.selectedMarketingProduct === product.id ? 'active' : ''}" onclick="selectMarketingProduct('${product.id}')">${escapeHtml(product.name)}</button>
                 `).join('')}
             </div>
-            <select class="filter-select" onchange="changeMarketingRange(this.value)">
-                <option value="7" ${state.marketingRange === 7 ? 'selected' : ''}>최근 7일</option>
-                <option value="14" ${state.marketingRange === 14 ? 'selected' : ''}>최근 14일</option>
-                <option value="30" ${state.marketingRange === 30 ? 'selected' : ''}>최근 30일</option>
+            <select class="filter-select" onchange="changeMarketingPeriod(this.value)">
+                ${renderPeriodOptions(state.marketingPeriod)}
             </select>
         </section>
 
@@ -1034,14 +1056,201 @@ function setMarketingView(view) {
     renderApp();
 }
 
-function changeReportDays(value) {
-    state.reportDays = Number(value) === 7 ? 7 : 3;
+function renderPeriodOptions(selected, includeThreeDays = false) {
+    const options = [
+        ['1d', '오늘 · 1일'],
+        ['yesterday', '어제'],
+        ...(includeThreeDays ? [['3d', '최근 3일']] : []),
+        ['7d', '최근 7일'],
+        ['14d', '최근 14일'],
+        ['30d', '최근 30일'],
+        ['week', '이번 주'],
+        ['month', '이번 달'],
+    ];
+    return options.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
+}
+
+function changeReportPeriod(value) {
+    state.reportPeriod = value;
     renderApp();
 }
 
-function changeMarketingRange(value) {
-    state.marketingRange = Number(value) || 7;
+function changeMarketingPeriod(value) {
+    state.marketingPeriod = value;
     renderApp();
+}
+
+function showGoogleSheetImportModal() {
+    const savedToken = localStorage.getItem('jangsai-sheet-token') || '';
+    showModal(`
+        <div class="modal-header">
+            <h3>구글시트 데이터 가져오기</h3>
+            <button class="modal-close" onclick="hideModal()"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="sheet-import-info">
+                <i class="ri-file-excel-2-line"></i>
+                <div><strong>8월 매출 시트</strong><span>4개 제품의 날짜별 검색량·유입·판매·매출·광고비를 가져옵니다.</span></div>
+            </div>
+            <form onsubmit="handleGoogleSheetImport(event)">
+                <div class="form-group">
+                    <label class="form-label">Apps Script 접근 코드</label>
+                    <input class="form-input" type="password" id="sheet-access-token" value="${escapeHtml(savedToken)}" required autocomplete="off">
+                    <div class="form-hint">Apps Script의 TOKEN 값입니다. 소스코드나 서버에는 저장하지 않습니다.</div>
+                </div>
+                <label class="checkbox-label sheet-remember-token">
+                    <input type="checkbox" id="sheet-remember" ${savedToken ? 'checked' : ''}>
+                    <span>이 브라우저에 접근 코드 저장</span>
+                </label>
+                <button type="submit" class="btn btn-primary btn-block mt-3" id="sheet-import-submit">
+                    <i class="ri-download-cloud-line"></i> 지금 가져오기
+                </button>
+            </form>
+        </div>`);
+}
+
+function parseSheetNumber(value) {
+    if (value === null || value === undefined || value === '') return 0;
+    const normalized = String(value).replace(/[₩원,\s]/g, '');
+    const number = Number(normalized.replace(/[^\d.-]/g, ''));
+    return Number.isFinite(number) ? number : 0;
+}
+
+function parseKeywordSearchValue(value) {
+    return String(value || '')
+        .split('/')
+        .reduce((sum, part) => sum + Math.max(0, parseSheetNumber(part)), 0);
+}
+
+function parseSheetMetricDate(value, year) {
+    const match = String(value || '').match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+    if (!match) return null;
+    return `${year}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+}
+
+function normalizeSheetLabel(value) {
+    return String(value || '').replace(/\s+/g, '').toLowerCase();
+}
+
+function parseGoogleSheetMetrics(payload) {
+    const rows = payload.values || [];
+    const year = new Date(payload.updatedAt || Date.now()).getFullYear();
+    const blockDefinitions = [
+        { slug: 'innerium-gala431', labels: ['갈라431'] },
+        { slug: 'innerium-minti431', labels: ['민티431'] },
+        { slug: 'yural-tonggam-cream', labels: ['유랄통감크림'] },
+        { slug: 'yural-myeongga-bonhwan', labels: ['유랄명가본환'] },
+    ];
+    const titleColumn = 6;
+    const subLabelColumn = 7;
+    const firstDateColumn = 8;
+    const records = [];
+
+    blockDefinitions.forEach((definition, definitionIndex) => {
+        const normalizedLabels = definition.labels.map(normalizeSheetLabel);
+        const startRow = rows.findIndex(row => normalizedLabels.includes(normalizeSheetLabel(row[titleColumn])));
+        if (startRow < 0) return;
+
+        const nextStarts = blockDefinitions.slice(definitionIndex + 1)
+            .map(next => rows.findIndex((row, index) => index > startRow && next.labels.map(normalizeSheetLabel).includes(normalizeSheetLabel(row[titleColumn]))))
+            .filter(index => index > startRow);
+        const endRow = nextStarts.length ? Math.min(...nextStarts) : rows.length;
+        const blockRows = rows.slice(startRow, endRow);
+        const dateRow = blockRows.find(row => normalizeSheetLabel(row[titleColumn]) === '날짜');
+        if (!dateRow) return;
+
+        const findRow = (column, labels) => blockRows.find(row => labels.includes(normalizeSheetLabel(row[column])));
+        const siteVisitsRow = findRow(titleColumn, ['자사몰유입수']);
+        const cafe24Row = findRow(subLabelColumn, ['자사몰']);
+        const smartstoreRow = findRow(subLabelColumn, ['스마트스토어']);
+        const coupangRows = blockRows.filter(row => ['쿠팡', '쿠팡윙', '쿠팡그로스'].includes(normalizeSheetLabel(row[subLabelColumn])));
+        const dailyRevenueRow = findRow(subLabelColumn, ['일매출']);
+        const dailyAdSpendRow = findRow(subLabelColumn, ['일광고비']);
+        const keywordHeaderIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '키워드검색량');
+        const siteVisitsIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '자사몰유입수');
+        const keywordRows = keywordHeaderIndex >= 0 && siteVisitsIndex > keywordHeaderIndex
+            ? blockRows.slice(keywordHeaderIndex + 1, siteVisitsIndex)
+            : [];
+
+        for (let column = firstDateColumn; column < dateRow.length; column++) {
+            const metricDate = parseSheetMetricDate(dateRow[column], year);
+            if (!metricDate) continue;
+            const sourceValues = [
+                siteVisitsRow?.[column], cafe24Row?.[column], smartstoreRow?.[column],
+                dailyRevenueRow?.[column], dailyAdSpendRow?.[column],
+                ...keywordRows.map(row => row[column]),
+            ];
+            if (!sourceValues.some(value => String(value || '').trim() !== '')) continue;
+
+            records.push({
+                product_slug: definition.slug,
+                metric_date: metricDate,
+                keyword_search_volume: keywordRows.reduce((sum, row) => sum + parseKeywordSearchValue(row[column]), 0),
+                site_visits: Math.max(0, parseSheetNumber(siteVisitsRow?.[column])),
+                cafe24_orders: Math.max(0, parseSheetNumber(cafe24Row?.[column])),
+                smartstore_orders: Math.max(0, parseSheetNumber(smartstoreRow?.[column])),
+                coupang_orders: Math.max(0, coupangRows.reduce((sum, row) => sum + parseSheetNumber(row[column]), 0)),
+                cafe24_revenue: Math.max(0, parseSheetNumber(dailyRevenueRow?.[column])),
+                coupang_revenue: 0,
+                smartstore_revenue: 0,
+                ad_spend: Math.max(0, parseSheetNumber(dailyAdSpendRow?.[column])),
+            });
+        }
+    });
+
+    return records;
+}
+
+async function handleGoogleSheetImport(event) {
+    event.preventDefault();
+    const button = $('#sheet-import-submit');
+    const token = $('#sheet-access-token').value.trim();
+    const remember = $('#sheet-remember').checked;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span> 시트 읽는 중...';
+
+    try {
+        const response = await fetch(`${GOOGLE_SHEET_API_URL}?token=${encodeURIComponent(token)}`);
+        if (!response.ok) throw new Error(`시트 연결 실패 (${response.status})`);
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || '시트 데이터를 읽지 못했습니다');
+
+        const parsed = parseGoogleSheetMetrics(payload);
+        const productMap = new Map(state.marketingProducts.map(product => [product.slug, product.id]));
+        const records = parsed
+            .filter(record => productMap.has(record.product_slug))
+            .map(({ product_slug, ...record }) => ({
+                ...record,
+                product_id: productMap.get(product_slug),
+                source: 'import',
+                source_details: {
+                    provider: 'google_sheets',
+                    sheet_name: payload.sheetName,
+                    synced_at: payload.updatedAt,
+                },
+                created_by: state.user.id,
+                updated_at: new Date().toISOString(),
+            }));
+
+        if (!records.length) throw new Error('가져올 제품 데이터를 찾지 못했습니다');
+        button.innerHTML = '<span class="spinner"></span> 저장 중...';
+        const { error } = await sb.from('daily_marketing_metrics').upsert(records, { onConflict: 'product_id,metric_date' });
+        if (error) throw error;
+
+        if (remember) localStorage.setItem('jangsai-sheet-token', token);
+        else localStorage.removeItem('jangsai-sheet-token');
+
+        hideModal();
+        await loadMarketingData();
+        state.reportPeriod = '7d';
+        renderApp();
+        showToast(`${records.length}건의 시트 데이터를 가져왔습니다`, 'success');
+    } catch (error) {
+        console.error('구글시트 가져오기 실패:', error);
+        showToast(error.message || '구글시트 가져오기에 실패했습니다', 'error');
+        button.disabled = false;
+        button.innerHTML = '<i class="ri-download-cloud-line"></i> 다시 시도';
+    }
 }
 
 function showDailyMetricModal() {

@@ -1938,6 +1938,41 @@ textarea.form-input {
     font-size: 0.74rem;
 }
 
+.sheet-import-info {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    margin-bottom: 22px;
+    padding: 15px;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.18);
+    border-radius: var(--radius-sm);
+}
+
+.sheet-import-info > i {
+    color: var(--success);
+    font-size: 1.6rem;
+}
+
+.sheet-import-info strong,
+.sheet-import-info span {
+    display: block;
+}
+
+.sheet-import-info strong {
+    font-size: 0.88rem;
+}
+
+.sheet-import-info span {
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+}
+
+.sheet-remember-token {
+    width: fit-content;
+}
+
 .internal-hero {
     display: flex;
     align-items: flex-end;
