@@ -116,6 +116,9 @@ assert.deepEqual(
 assert.equal(sheetResult[0].reported_total_revenue, 60000, '일 매출을 자사몰 매출로 오인하지 않는다');
 assert.equal('cafe24_revenue' in sheetResult[0], false, '채널 매출이 없으면 임의 귀속하지 않는다');
 assert.equal(vm.runInContext(`canonicalProductKeyword('yural-tonggam-cream', '유랄 통감크림')`, context), '유랄통감크림');
+assert.equal(vm.runInContext(`canonicalProductKeyword('yural-tonggam-cream', '통감크림')`, context), '통감크림');
+assert.equal(vm.runInContext(`canonicalProductKeyword('yural-myeongga-bonhwan', '유랄 명가본환')`, context), '유랄명가본환');
+assert.equal(vm.runInContext(`canonicalProductKeyword('yural-myeongga-bonhwan', '명가본환')`, context), '명가본환');
 assert.match(
     vm.runInContext(`renderReportRow('판매량', ['2026-08-27', '2026-08-26'], new Map([
         ['2026-08-27', { value: 12 }],

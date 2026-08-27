@@ -38,8 +38,8 @@ const DEFAULT_MARKETING_PRODUCTS = [
 const PRODUCT_KEYWORDS = {
     'innerium-gala431': ['이너리움 갈라431', '갈라431', '이너리움'],
     'innerium-minti431': ['이너리움 민티431', '민티431', '이너리움'],
-    'yural-tonggam-cream': ['유랄통감크림'],
-    'yural-myeongga-bonhwan': ['유랄명가본환'],
+    'yural-tonggam-cream': ['유랄통감크림', '통감크림'],
+    'yural-myeongga-bonhwan': ['유랄명가본환', '명가본환'],
 };
 
 const MARKETING_INDEX_RULES = {
@@ -1672,8 +1672,9 @@ function normalizeSheetLabel(value) {
 }
 
 function canonicalProductKeyword(productSlug, keyword) {
-    if (productSlug === 'yural-tonggam-cream') return '유랄통감크림';
-    if (productSlug === 'yural-myeongga-bonhwan') return '유랄명가본환';
+    const normalized = String(keyword || '').replace(/\s+/g, '');
+    if (productSlug === 'yural-tonggam-cream') return normalized.includes('유랄') ? '유랄통감크림' : '통감크림';
+    if (productSlug === 'yural-myeongga-bonhwan') return normalized.includes('유랄') ? '유랄명가본환' : '명가본환';
     return String(keyword || '').trim();
 }
 
