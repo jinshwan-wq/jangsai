@@ -9,14 +9,21 @@ type Mapping = {
 };
 
 type MetricPatch = Record<string, number | Record<string, boolean>>;
+type CollectionResult = {
+  metrics?: MetricPatch;
+  keywordSnapshots?: Array<{ keyword: string; search_volume: number }>;
+};
 
 const ALLOWED_METRICS = new Set([
   'blog_views', 'cafe_views', 'content_views', 'keyword_search_volume',
   'cafe24_visits', 'smartstore_visits', 'coupang_visits',
+  'coupang_wing_visits', 'coupang_growth_visits',
   'tracked_visits', 'tracked_orders',
   'cafe24_orders', 'cafe24_revenue',
   'smartstore_orders', 'smartstore_revenue',
   'coupang_orders', 'coupang_revenue', 'reported_total_revenue', 'ad_spend',
+  'coupang_wing_orders', 'coupang_wing_revenue',
+  'coupang_growth_orders', 'coupang_growth_revenue',
 ]);
 
 const PROVIDER_TOKEN_ENV: Record<string, string> = {
@@ -133,7 +140,7 @@ async function hmacBase64(secret: string, value: string) {
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-async function collectNaverSearch(mapping: Mapping) {
+async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
   const apiKey = Deno.env.get('NAVER_SEARCH_API_KEY');
   const secretKey = Deno.env.get('NAVER_SEARCH_SECRET_KEY');
   const customerId = Deno.env.get('NAVER_SEARCH_CUSTOMER_ID');
@@ -164,20 +171,20 @@ async function collectNaverSearch(mapping: Mapping) {
   if (!response.ok) throw new Error(`네이버 검색량 응답 오류 (${response.status})`);
   const payload = await response.json();
   const wanted = new Set(configuredKeywords.map(keyword => keyword.replace(/\s+/g, '').toLowerCase()));
-  const monthlyVolume = (payload.keywordList || []).reduce((sum: number, item: Record<string, unknown>) => {
+  const volumes = (payload.keywordList || []).flatMap((item: Record<string, unknown>) => {
     const keyword = String(item.relKeyword || '').replace(/\s+/g, '').toLowerCase();
-    if (!wanted.has(keyword)) return sum;
+    if (!wanted.has(keyword)) return [];
     const pc = typeof item.monthlyPcQcCnt === 'number' ? item.monthlyPcQcCnt : 0;
     const mobile = typeof item.monthlyMobileQcCnt === 'number' ? item.monthlyMobileQcCnt : 0;
-    return sum + pc + mobile;
-  }, 0);
+    const originalKeyword = configuredKeywords.find(value => value.replace(/\s+/g, '').toLowerCase() === keyword) || String(item.relKeyword);
+    return [{ keyword: originalKeyword, search_volume: pc + mobile }];
+  });
   return {
-    keyword_search_volume: monthlyVolume,
-    data_completeness: { keyword_search_volume: true },
+    keywordSnapshots: volumes,
   };
 }
 
-async function collectMapping(mapping: Mapping, metricDate: string) {
+async function collectMapping(mapping: Mapping, metricDate: string): Promise<CollectionResult> {
   if (mapping.provider === 'google_sheets') {
     throw new Error('Google Sheets는 전환 기간의 수동 보조 수집원입니다.');
   }
@@ -205,7 +212,7 @@ async function collectMapping(mapping: Mapping, metricDate: string) {
   const patch = normalizeMetrics(await response.json(), mapping);
   const metricCount = Object.keys(patch).filter(key => key !== 'data_completeness').length;
   if (!metricCount) throw new Error(`${mapping.provider} 응답에 사용할 지표가 없습니다.`);
-  return patch;
+  return { metrics: patch };
 }
 
 Deno.serve(async request => {
@@ -292,30 +299,47 @@ Deno.serve(async request => {
     let failed = 0;
     for (const mapping of providerMappings) {
       try {
-        const patch = await collectMapping(mapping, metricDate);
+        const collection = await collectMapping(mapping, metricDate);
         const sourceDetails = {
           provider,
           mapping_id: mapping.id,
           collected_at: new Date().toISOString(),
         };
-        const { error } = provider === 'naver_search'
-          ? await supabase.from('keyword_search_snapshots').upsert({
+        let error = null;
+        if (provider === 'naver_search') {
+          const snapshots = collection.keywordSnapshots || [];
+          if (!snapshots.length) throw new Error('일치하는 키워드별 검색량이 없습니다.');
+          ({ error } = await supabase.from('keyword_search_snapshots').upsert(
+            snapshots.map((snapshot: { keyword: string; search_volume: number }) => ({
               product_id: mapping.product_id,
               snapshot_date: metricDate,
+              keyword: snapshot.keyword,
               window_days: 30,
-              search_volume: patch.keyword_search_volume,
+              search_volume: snapshot.search_volume,
               provider,
               source_details: sourceDetails,
               collected_at: new Date().toISOString(),
-            }, { onConflict: 'product_id,snapshot_date,provider' })
-          : await supabase.rpc('merge_daily_marketing_metric', {
+            })),
+            { onConflict: 'product_id,snapshot_date,keyword,provider' },
+          ));
+        } else {
+          const patch = collection.metrics || {};
+          ({ error } = await supabase.rpc('merge_daily_marketing_metric', {
               p_product_id: mapping.product_id,
               p_metric_date: metricDate,
               p_patch: patch,
               p_source: 'api',
               p_source_details: sourceDetails,
               p_collection_status: 'partial',
-            });
+          }));
+          if (!error && Object.keys(patch).some(key => key.startsWith('coupang_wing_') || key.startsWith('coupang_growth_'))) {
+            ({ error } = await supabase.rpc('merge_daily_coupang_metrics', {
+              p_product_id: mapping.product_id,
+              p_metric_date: metricDate,
+              p_patch: patch,
+            }));
+          }
+        }
         if (error) throw error;
         await supabase
           .from('marketing_source_mappings')

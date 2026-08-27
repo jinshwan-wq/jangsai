@@ -53,7 +53,8 @@ const MARKETING_INDEX_RULES = {
 const MARKETING_CHANNELS = [
     { id: 'cafe24', label: '자사몰', visits: 'cafe24_visits', legacyVisits: 'site_visits', orders: 'cafe24_orders', revenue: 'cafe24_revenue' },
     { id: 'smartstore', label: '스마트스토어', visits: 'smartstore_visits', orders: 'smartstore_orders', revenue: 'smartstore_revenue' },
-    { id: 'coupang', label: '쿠팡', visits: 'coupang_visits', orders: 'coupang_orders', revenue: 'coupang_revenue' },
+    { id: 'coupang_wing', label: '쿠팡 윙', visits: 'coupang_wing_visits', orders: 'coupang_wing_orders', revenue: 'coupang_wing_revenue' },
+    { id: 'coupang_growth', label: '로켓그로스', visits: 'coupang_growth_visits', orders: 'coupang_growth_orders', revenue: 'coupang_growth_revenue' },
 ];
 
 // --- 앱 상태 ---
@@ -81,6 +82,7 @@ const state = {
     marketingRuns: [],
     marketingBatches: [],
     marketingSearchSnapshots: [],
+    dailyKeywordMetrics: [],
     selectedMarketingProduct: 'all',
     marketingPeriod: '7d',
     marketingView: 'report',
@@ -268,6 +270,7 @@ async function loadMarketingData() {
         { data: runs, error: runError },
         { data: batches, error: batchError },
         { data: searchSnapshots, error: searchSnapshotError },
+        { data: keywordMetrics, error: keywordMetricError },
     ] = await Promise.all([
         sb.from('marketing_products').select('*').eq('is_active', true).order('sort_order'),
         sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
@@ -275,6 +278,7 @@ async function loadMarketingData() {
         sb.from('marketing_ingestion_runs').select('*').order('started_at', { ascending: false }).limit(30),
         sb.from('marketing_ingestion_batches').select('*').order('started_at', { ascending: false }).limit(10),
         sb.from('keyword_search_snapshots').select('*').gte('snapshot_date', dateFrom).order('snapshot_date'),
+        sb.from('daily_keyword_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
     ]);
 
     if (productError || metricError) {
@@ -291,6 +295,7 @@ async function loadMarketingData() {
     state.marketingRuns = runError ? [] : (runs || []);
     state.marketingBatches = batchError ? [] : (batches || []);
     state.marketingSearchSnapshots = searchSnapshotError ? [] : (searchSnapshots || []);
+    state.dailyKeywordMetrics = keywordMetricError ? [] : (keywordMetrics || []);
     state.marketingDataReady = true;
 }
 
@@ -701,12 +706,24 @@ function formatWon(value) {
     return `${new Intl.NumberFormat('ko-KR').format(Math.round(metricNumber(value)))}원`;
 }
 
+function getCoupangMetric(metric, suffix) {
+    const wingKey = `coupang_wing_${suffix}`;
+    const growthKey = `coupang_growth_${suffix}`;
+    const hasSplitData = nullableMetricNumber(metric?.[wingKey]) !== null ||
+        nullableMetricNumber(metric?.[growthKey]) !== null ||
+        metric?.data_completeness?.[wingKey] === true ||
+        metric?.data_completeness?.[growthKey] === true;
+    return hasSplitData
+        ? metricNumber(metric?.[wingKey]) + metricNumber(metric?.[growthKey])
+        : metricNumber(metric?.[`coupang_${suffix}`]);
+}
+
 function getMetricSales(metric) {
-    return metricNumber(metric?.cafe24_orders) + metricNumber(metric?.coupang_orders) + metricNumber(metric?.smartstore_orders);
+    return metricNumber(metric?.cafe24_orders) + getCoupangMetric(metric, 'orders') + metricNumber(metric?.smartstore_orders);
 }
 
 function getMetricRevenue(metric) {
-    const channelRevenue = metricNumber(metric?.cafe24_revenue) + metricNumber(metric?.coupang_revenue) + metricNumber(metric?.smartstore_revenue);
+    const channelRevenue = metricNumber(metric?.cafe24_revenue) + getCoupangMetric(metric, 'revenue') + metricNumber(metric?.smartstore_revenue);
     return Math.max(channelRevenue, metricNumber(metric?.reported_total_revenue));
 }
 
@@ -832,22 +849,32 @@ function getAverageDailySearchVolume(metrics) {
     return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
 
-function getSearchSnapshotSeries() {
-    const selectedIds = getSelectedProductIds();
-    const daily = new Map();
-    state.marketingSearchSnapshots
-        .filter(snapshot => selectedIds.has(snapshot.product_id))
-        .forEach(snapshot => {
-            daily.set(snapshot.snapshot_date, (daily.get(snapshot.snapshot_date) || 0) + metricNumber(snapshot.search_volume));
-        });
-    return [...daily.entries()]
-        .map(([date, value]) => ({ date, value }))
-        .sort((a, b) => a.date.localeCompare(b.date));
+function getKeywordSearchOverview(metrics = [], selectedIds = getSelectedProductIds()) {
+    const latestByKeyword = new Map();
+    const add = (item, dateKey, valueKey) => {
+        if (!selectedIds.has(item.product_id) || !item.keyword || item.keyword === '기존 합계') return;
+        const key = `${item.product_id}:${item.keyword}`;
+        const current = latestByKeyword.get(key);
+        if (!current || item[dateKey] > current.date) {
+            latestByKeyword.set(key, {
+                product_id: item.product_id,
+                keyword: item.keyword,
+                value: metricNumber(item[valueKey]),
+                date: item[dateKey],
+            });
+        }
+    };
+    state.dailyKeywordMetrics.forEach(item => add(item, 'metric_date', 'search_volume'));
+    state.marketingSearchSnapshots.forEach(item => add(item, 'snapshot_date', 'search_volume'));
+    return [...latestByKeyword.values()].sort((a, b) => a.keyword.localeCompare(b.keyword, 'ko'));
 }
 
-function getCurrentSearchVolume(metrics) {
-    const series = getSearchSnapshotSeries();
-    return series.length ? series[series.length - 1].value : getAverageDailySearchVolume(metrics);
+function renderKeywordSearchOverview(metrics) {
+    const keywords = getKeywordSearchOverview(metrics);
+    if (!keywords.length) return '<span class="keyword-empty">키워드별 데이터 필요</span>';
+    return `<div class="keyword-volume-list">${keywords.map(item =>
+        `<span><small>${escapeHtml(item.keyword)}</small><strong>${formatMetric(item.value)}</strong></span>`
+    ).join('')}</div>`;
 }
 
 function getMonthTarget(referenceDate = kstDateString(-1)) {
@@ -888,11 +915,25 @@ function getMetricsInDateRange(from, to) {
 }
 
 function calculateSearchMomentum() {
-    const snapshots = getSearchSnapshotSeries();
-    if (snapshots.length >= 2) {
-        const current = snapshots[snapshots.length - 1].value;
-        const previous = snapshots[snapshots.length - 2].value;
+    const selectedIds = getSelectedProductIds();
+    const grouped = new Map();
+    [...state.dailyKeywordMetrics.map(item => ({ ...item, date: item.metric_date })),
+     ...state.marketingSearchSnapshots.map(item => ({ ...item, date: item.snapshot_date }))]
+        .filter(item => selectedIds.has(item.product_id) && item.keyword && item.keyword !== '기존 합계')
+        .forEach(item => {
+            const key = `${item.product_id}:${item.keyword}`;
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key).push(item);
+        });
+    const changes = [...grouped.values()].map(items => {
+        const sorted = items.sort((a, b) => a.date.localeCompare(b.date));
+        if (sorted.length < 2) return null;
+        const previous = metricNumber(sorted[sorted.length - 2].search_volume);
+        const current = metricNumber(sorted[sorted.length - 1].search_volume);
         return previous ? ((current - previous) / previous) * 100 : null;
+    }).filter(value => value !== null);
+    if (changes.length) {
+        return Math.min(...changes);
     }
     const today = new Date();
     const currentEnd = localDateString(today);
@@ -1008,6 +1049,7 @@ function renderProductMetricCard(product) {
         .sort((a, b) => b.metric_date.localeCompare(a.metric_date));
     const latest = metrics[0];
     const latestTotal = latest ? aggregateMarketingMetrics([latest]) : null;
+    const keywordValues = getKeywordSearchOverview(metrics, new Set([product.id]));
     const title = `${product.brand} ${product.name}`;
 
     return `
@@ -1020,7 +1062,7 @@ function renderProductMetricCard(product) {
         <h3>${escapeHtml(product.name)}</h3>
         ${latest ? `
         <div class="metric-product-summary">
-            <span><small>검색량</small><strong>${formatMetric(latest.keyword_search_volume)}</strong></span>
+            <span><small>검색 키워드</small><strong>${keywordValues.length ? `${escapeHtml(keywordValues[0].keyword)} ${formatMetric(keywordValues[0].value)}` : '—'}</strong></span>
             <span><small>유입</small><strong>${latestTotal.channelPairsMeasured ? formatMetric(latestTotal.visits) : '—'}</strong></span>
             <span><small>판매</small><strong>${formatMetric(getMetricSales(latest))}</strong></span>
         </div>
@@ -1043,7 +1085,7 @@ function renderMarketingDailyTable(metrics) {
     return `
     <div class="marketing-table-wrap">
         <table class="marketing-table">
-            <thead><tr><th>날짜</th><th>블로그</th><th>카페</th><th>노출 합계</th><th>브랜드 검색</th><th>측정 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>측정 전환율</th></tr></thead>
+            <thead><tr><th>날짜</th><th>블로그</th><th>카페</th><th>노출 합계</th><th>키워드별 검색</th><th>측정 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>측정 전환율</th></tr></thead>
             <tbody>
             ${rows.map(([date, dayMetrics]) => {
                 const day = aggregateMarketingMetrics(dayMetrics);
@@ -1052,7 +1094,7 @@ function renderMarketingDailyTable(metrics) {
                     <td>${formatMetric(day.blog_views)}</td>
                     <td>${formatMetric(day.cafe_views)}</td>
                     <td>${formatMetric(day.content_views)}</td>
-                    <td>${formatMetric(day.keyword_search_volume)}</td>
+                    <td>${renderDailyKeywordValues(date)}</td>
                     <td>${day.channelPairsMeasured ? formatMetric(day.visits) : '—'}</td>
                     <td>${formatMetric(day.orders)}</td>
                     <td>${formatWon(day.revenue)}</td>
@@ -1063,6 +1105,17 @@ function renderMarketingDailyTable(metrics) {
             </tbody>
         </table>
     </div>`;
+}
+
+function renderDailyKeywordValues(date) {
+    const selectedIds = getSelectedProductIds();
+    const values = state.dailyKeywordMetrics.filter(item =>
+        selectedIds.has(item.product_id) && item.metric_date === date
+    );
+    if (!values.length) return '<span class="report-no-data">—</span>';
+    return `<div class="daily-keyword-values">${values.map(item =>
+        `<span>${escapeHtml(item.keyword)} <b>${formatMetric(item.search_volume)}</b></span>`
+    ).join('')}</div>`;
 }
 
 function localDateString(date) {
@@ -1121,6 +1174,12 @@ function renderDailyReportTable(product) {
     const dates = getReportDates();
     const productMetrics = state.marketingMetrics.filter(metric => metric.product_id === product.id);
     const metricsByDate = new Map(productMetrics.map(metric => [metric.metric_date, metric]));
+    const productKeywordMetrics = state.dailyKeywordMetrics.filter(metric => metric.product_id === product.id);
+    const keywordMetricsByDate = new Map(productKeywordMetrics.map(metric => [`${metric.metric_date}:${metric.keyword}`, metric]));
+    const keywordNames = [...new Set([
+        ...productKeywordMetrics.map(metric => metric.keyword),
+        ...(PRODUCT_KEYWORDS[product.slug] || [product.name]),
+    ])].filter(keyword => keyword !== '기존 합계');
     const monthAggregate = date => {
         const month = date.slice(0, 7);
         return aggregateMarketingMetrics(productMetrics.filter(metric => metric.metric_date.startsWith(month) && metric.metric_date <= date));
@@ -1144,7 +1203,16 @@ function renderDailyReportTable(product) {
             </thead>
             <tbody>
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-search-line"></i> 검색·콘텐츠</th></tr>
-                ${renderReportRow('브랜드 검색량', dates, metricsByDate, metric => reportMetricValue(metric, 'keyword_search_volume'))}
+                ${keywordNames.map(keyword => renderReportRow(
+                    `검색량 · ${keyword}`,
+                    dates,
+                    keywordMetricsByDate,
+                    (_, date) => {
+                        const item = keywordMetricsByDate.get(`${date}:${keyword}`);
+                        return item ? formatMetric(item.search_volume) : '<span class="report-no-data">—</span>';
+                    },
+                    { indent: true }
+                )).join('')}
                 ${renderReportRow('블로그 방문자 수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.blog_views)) : '<span class="report-no-data">—</span>')}
                 ${renderReportRow('카페 글 조회수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.cafe_views)) : '<span class="report-no-data">—</span>')}
                 ${renderReportRow('노출 합계', dates, metricsByDate, metric => metric ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
@@ -1152,7 +1220,8 @@ function renderDailyReportTable(product) {
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[1]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[1]))) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('쿠팡', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('로켓그로스', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[3]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[3]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('측정 유입 합계', dates, metricsByDate, metric => {
                     if (!metric) return '<span class="report-no-data">—</span>';
                     const day = aggregateMarketingMetrics([metric]);
@@ -1162,7 +1231,12 @@ function renderDailyReportTable(product) {
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-shopping-bag-3-line"></i> 판매량</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe24_orders'), { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => reportMetricValue(metric, 'smartstore_orders'), { indent: true })}
-                ${renderReportRow('쿠팡', dates, metricsByDate, metric => reportMetricValue(metric, 'coupang_orders'), { indent: true })}
+                ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_wing_orders) !== null ? formatMetric(metric.coupang_wing_orders) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('로켓그로스', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_growth_orders) !== null ? formatMetric(metric.coupang_growth_orders) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('쿠팡 기존 미분류', dates, metricsByDate, metric => {
+                    if (!metric || nullableMetricNumber(metric.coupang_wing_orders) !== null || nullableMetricNumber(metric.coupang_growth_orders) !== null) return '<span class="report-no-data">—</span>';
+                    return formatMetric(metric.coupang_orders);
+                }, { indent: true })}
                 ${renderReportRow('판매량 총합', dates, metricsByDate, metric => metric ? formatMetric(getMetricSales(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-money-dollar-circle-line"></i> 매출</th></tr>
@@ -1322,7 +1396,7 @@ function renderFunnelDashboardView() {
         </section>
 
         <section class="marketing-kpis">
-            <div class="marketing-kpi"><span>브랜드 검색 관심</span><strong>${formatMetric(getCurrentSearchVolume(metrics))}</strong><small>최근 30일 검색량 · 직전 수집 대비 ${health.searchMomentum === null ? '비교 불가' : `${health.searchMomentum >= 0 ? '+' : ''}${health.searchMomentum.toFixed(1)}%`}</small></div>
+            <div class="marketing-kpi keyword-kpi"><span>브랜드 검색량 · 키워드별</span>${renderKeywordSearchOverview(metrics)}<small>직전 수집 대비 최저 변화 ${health.searchMomentum === null ? '비교 불가' : `${health.searchMomentum >= 0 ? '+' : ''}${health.searchMomentum.toFixed(1)}%`}</small></div>
             <div class="marketing-kpi"><span>측정 가능 유입</span><strong>${total.channelPairsMeasured ? formatMetric(total.visits) : '—'}</strong><small>방문자가 확보된 채널 합계</small></div>
             <div class="marketing-kpi"><span>총 매출</span><strong>${formatWon(total.revenue)}</strong><small>카페24·쿠팡·스마트스토어</small></div>
             <div class="marketing-kpi"><span>광고비</span><strong>${formatWon(total.ad_spend)}</strong><small>선택 기간 합계</small></div>
@@ -1597,13 +1671,19 @@ function parseGoogleSheetMetrics(payload) {
         const cafeViewsRow = findRow(titleColumn, ['카페글조회수', '카페조회수']) || findRow(subLabelColumn, ['카페글조회수', '카페조회수']);
         const smartstoreVisitsRow = findRow(titleColumn, ['스마트스토어유입수', '스마트스토어방문자수']) || findRow(subLabelColumn, ['스마트스토어유입수', '스마트스토어방문자수']);
         const coupangVisitsRow = findRow(titleColumn, ['쿠팡유입수', '쿠팡방문자수']) || findRow(subLabelColumn, ['쿠팡유입수', '쿠팡방문자수']);
+        const coupangWingVisitsRow = findRow(titleColumn, ['쿠팡윙유입수', '쿠팡윙방문자수']) || findRow(subLabelColumn, ['쿠팡윙유입수', '쿠팡윙방문자수']);
+        const coupangGrowthVisitsRow = findRow(titleColumn, ['로켓그로스유입수', '로켓그로스방문자수']) || findRow(subLabelColumn, ['로켓그로스유입수', '로켓그로스방문자수']);
         const cafe24Row = findRow(subLabelColumn, ['자사몰']);
         const smartstoreRow = findRow(subLabelColumn, ['스마트스토어']);
-        const coupangRows = blockRows.filter(row => ['쿠팡', '쿠팡윙', '쿠팡그로스'].includes(normalizeSheetLabel(row[subLabelColumn])));
+        const coupangRow = findRow(subLabelColumn, ['쿠팡']);
+        const coupangWingRow = findRow(subLabelColumn, ['쿠팡윙', '윙']);
+        const coupangGrowthRow = findRow(subLabelColumn, ['쿠팡그로스', '로켓그로스']);
         const dailyRevenueRow = findRow(subLabelColumn, ['일매출']);
         const cafe24RevenueRow = findRow(titleColumn, ['자사몰매출']) || findRow(subLabelColumn, ['자사몰매출']);
         const smartstoreRevenueRow = findRow(titleColumn, ['스마트스토어매출']) || findRow(subLabelColumn, ['스마트스토어매출']);
         const coupangRevenueRow = findRow(titleColumn, ['쿠팡매출']) || findRow(subLabelColumn, ['쿠팡매출']);
+        const coupangWingRevenueRow = findRow(titleColumn, ['쿠팡윙매출']) || findRow(subLabelColumn, ['쿠팡윙매출']);
+        const coupangGrowthRevenueRow = findRow(titleColumn, ['로켓그로스매출']) || findRow(subLabelColumn, ['로켓그로스매출']);
         const dailyAdSpendRow = findRow(subLabelColumn, ['일광고비']);
         const keywordHeaderIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '키워드검색량');
         const siteVisitsIndex = blockRows.findIndex(row => normalizeSheetLabel(row[titleColumn]) === '자사몰유입수');
@@ -1617,9 +1697,12 @@ function parseGoogleSheetMetrics(payload) {
             const sourceValues = [
                 blogViewsRow?.[column], cafeViewsRow?.[column], siteVisitsRow?.[column],
                 smartstoreVisitsRow?.[column], coupangVisitsRow?.[column],
-                cafe24Row?.[column], smartstoreRow?.[column], ...coupangRows.map(row => row[column]),
+                coupangWingVisitsRow?.[column], coupangGrowthVisitsRow?.[column],
+                cafe24Row?.[column], smartstoreRow?.[column], coupangRow?.[column],
+                coupangWingRow?.[column], coupangGrowthRow?.[column],
                 dailyRevenueRow?.[column], cafe24RevenueRow?.[column],
-                smartstoreRevenueRow?.[column], coupangRevenueRow?.[column], dailyAdSpendRow?.[column],
+                smartstoreRevenueRow?.[column], coupangRevenueRow?.[column],
+                coupangWingRevenueRow?.[column], coupangGrowthRevenueRow?.[column], dailyAdSpendRow?.[column],
                 ...keywordRows.map(row => row[column]),
             ];
             if (!sourceValues.some(hasSheetValue)) continue;
@@ -1631,24 +1714,30 @@ function parseGoogleSheetMetrics(payload) {
                 record[key] = Math.max(0, parser(value));
                 completeness[key] = true;
             };
-            if (keywordRows.some(row => hasSheetValue(row[column]))) {
-                record.keyword_search_volume = keywordRows.reduce((sum, row) => sum + parseKeywordSearchValue(row[column]), 0);
-                completeness.keyword_search_volume = true;
-            }
+            record.keyword_metrics = keywordRows
+                .filter(row => hasSheetValue(row[column]))
+                .map(row => ({
+                    keyword: String(row[subLabelColumn] || row[titleColumn] || '').trim(),
+                    search_volume: Math.max(0, parseKeywordSearchValue(row[column])),
+                }))
+                .filter(item => item.keyword);
             assign('blog_views', blogViewsRow?.[column]);
             assign('cafe_views', cafeViewsRow?.[column]);
             assign('cafe24_visits', siteVisitsRow?.[column]);
             assign('smartstore_visits', smartstoreVisitsRow?.[column]);
             assign('coupang_visits', coupangVisitsRow?.[column]);
+            assign('coupang_wing_visits', coupangWingVisitsRow?.[column]);
+            assign('coupang_growth_visits', coupangGrowthVisitsRow?.[column]);
             assign('cafe24_orders', cafe24Row?.[column]);
             assign('smartstore_orders', smartstoreRow?.[column]);
-            if (coupangRows.some(row => hasSheetValue(row[column]))) {
-                record.coupang_orders = Math.max(0, coupangRows.reduce((sum, row) => sum + parseSheetNumber(row[column]), 0));
-                completeness.coupang_orders = true;
-            }
+            assign('coupang_orders', coupangRow?.[column]);
+            assign('coupang_wing_orders', coupangWingRow?.[column]);
+            assign('coupang_growth_orders', coupangGrowthRow?.[column]);
             assign('cafe24_revenue', cafe24RevenueRow?.[column]);
             assign('smartstore_revenue', smartstoreRevenueRow?.[column]);
             assign('coupang_revenue', coupangRevenueRow?.[column]);
+            assign('coupang_wing_revenue', coupangWingRevenueRow?.[column]);
+            assign('coupang_growth_revenue', coupangGrowthRevenueRow?.[column]);
             assign('reported_total_revenue', dailyRevenueRow?.[column]);
             assign('ad_spend', dailyAdSpendRow?.[column]);
             record.data_completeness = completeness;
@@ -1667,6 +1756,29 @@ async function mergeDailyMarketingMetric(productId, metricDate, patch, source, s
         p_source: source,
         p_source_details: sourceDetails || {},
         p_collection_status: collectionStatus,
+    });
+    if (error) throw error;
+    const coupangPatch = Object.fromEntries(Object.entries(patch).filter(([key]) =>
+        key.startsWith('coupang_wing_') || key.startsWith('coupang_growth_')
+    ));
+    if (Object.keys(coupangPatch).length) {
+        const { error: coupangError } = await sb.rpc('merge_daily_coupang_metrics', {
+            p_product_id: productId,
+            p_metric_date: metricDate,
+            p_patch: coupangPatch,
+        });
+        if (coupangError) throw coupangError;
+    }
+}
+
+async function mergeDailyKeywordMetric(productId, metricDate, item, source, sourceDetails) {
+    const { error } = await sb.rpc('merge_daily_keyword_metric', {
+        p_product_id: productId,
+        p_metric_date: metricDate,
+        p_keyword: item.keyword,
+        p_search_volume: item.search_volume,
+        p_source: source,
+        p_source_details: sourceDetails || {},
     });
     if (error) throw error;
 }
@@ -1689,27 +1801,38 @@ async function handleGoogleSheetImport(event) {
         const productMap = new Map(state.marketingProducts.map(product => [product.slug, product.id]));
         const records = parsed
             .filter(record => productMap.has(record.product_slug))
-            .map(({ product_slug, metric_date, ...patch }) => ({
+            .map(({ product_slug, metric_date, keyword_metrics = [], ...patch }) => ({
                 patch,
+                keyword_metrics,
                 metric_date,
                 product_id: productMap.get(product_slug),
             }));
 
         if (!records.length) throw new Error('가져올 제품 데이터를 찾지 못했습니다');
         button.innerHTML = '<span class="spinner"></span> 저장 중...';
-        await Promise.all(records.map(record => mergeDailyMarketingMetric(
-            record.product_id,
-            record.metric_date,
-            record.patch,
-            'import',
-            {
+        await Promise.all(records.map(async record => {
+            const sourceDetails = {
                 provider: 'google_sheets',
                 sheet_name: payload.sheetName,
                 synced_at: payload.updatedAt,
                 temporary_fallback: true,
-            },
-            'imported'
-        )));
+            };
+            await mergeDailyMarketingMetric(
+                record.product_id,
+                record.metric_date,
+                record.patch,
+                'import',
+                sourceDetails,
+                'imported'
+            );
+            await Promise.all(record.keyword_metrics.map(item => mergeDailyKeywordMetric(
+                record.product_id,
+                record.metric_date,
+                item,
+                'import',
+                sourceDetails
+            )));
+        }));
 
         if (remember) localStorage.setItem('jangsai-sheet-token', token);
         else localStorage.removeItem('jangsai-sheet-token');
@@ -1727,6 +1850,22 @@ async function handleGoogleSheetImport(event) {
     }
 }
 
+function renderManualKeywordInputs(productId) {
+    const product = state.marketingProducts.find(item => item.id === productId);
+    const keywords = product ? (PRODUCT_KEYWORDS[product.slug] || [product.name]) : [];
+    return keywords.map((keyword, index) => `
+        <div class="form-group">
+            <label class="form-label">${escapeHtml(keyword)}</label>
+            <input class="form-input metric-keyword-volume" type="number" min="0"
+                data-keyword="${escapeHtml(keyword)}" id="metric-keyword-${index}" placeholder="미수집이면 비워두기">
+        </div>`).join('');
+}
+
+function updateManualKeywordInputs(productId) {
+    const container = $('#metric-keyword-fields');
+    if (container) container.innerHTML = renderManualKeywordInputs(productId);
+}
+
 function showDailyMetricModal() {
     if (!state.marketingDataReady) {
         showToast('먼저 마케팅 DB 마이그레이션을 적용해주세요', 'warning');
@@ -1742,7 +1881,7 @@ function showDailyMetricModal() {
         <div class="modal-body">
             <form onsubmit="handleDailyMetricSubmit(event)">
                 <div class="form-row">
-                    <div class="form-group"><label class="form-label">제품</label><select class="form-input" id="metric-product" required>
+                    <div class="form-group"><label class="form-label">제품</label><select class="form-input" id="metric-product" onchange="updateManualKeywordInputs(this.value)" required>
                         ${state.marketingProducts.map(product => `<option value="${product.id}" ${product.id === selected ? 'selected' : ''}>${escapeHtml(product.brand)} ${escapeHtml(product.name)}</option>`).join('')}
                     </select></div>
                     <div class="form-group"><label class="form-label">기준일</label><input class="form-input" type="date" id="metric-date" value="${today}" required></div>
@@ -1751,18 +1890,17 @@ function showDailyMetricModal() {
                     <div class="form-group"><label class="form-label">블로그 방문자 수</label><input class="form-input" type="number" id="metric-blog-views" min="0" placeholder="미수집이면 비워두기"></div>
                     <div class="form-group"><label class="form-label">카페 글 조회수</label><input class="form-input" type="number" id="metric-cafe-views" min="0" placeholder="미수집이면 비워두기"></div>
                 </div>
-                <div class="form-row">
-                    <div class="form-group"><label class="form-label">브랜드 검색량</label><input class="form-input" type="number" id="metric-search" min="0" placeholder="미수집이면 비워두기"></div>
-                    <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" placeholder="미수집이면 비워두기"></div>
-                </div>
+                <label class="form-label">브랜드 검색량 · 키워드별</label>
+                <div class="form-row" id="metric-keyword-fields">${renderManualKeywordInputs(selected)}</div>
+                <div class="form-group"><label class="form-label">광고비</label><input class="form-input" type="number" id="metric-ad-spend" min="0" placeholder="미수집이면 비워두기"></div>
                 <div class="form-row">
                     <div class="form-group"><label class="form-label">UTM 추적 유입</label><input class="form-input" type="number" id="metric-tracked-visits" min="0" placeholder="선택 항목"><div class="form-hint">원고별 보조 분석에 사용</div></div>
                     <div class="form-group"><label class="form-label">UTM 추적 구매</label><input class="form-input" type="number" id="metric-tracked-orders" min="0" placeholder="선택 항목"><div class="form-hint">원고별 보조 분석에 사용</div></div>
                 </div>
                 <div class="channel-entry-grid">
-                    ${['cafe24', 'coupang', 'smartstore'].map((channel, index) => `
+                    ${['cafe24', 'smartstore', 'coupang_wing', 'coupang_growth'].map((channel, index) => `
                     <div class="channel-entry">
-                        <strong>${['자사몰', '쿠팡', '스마트스토어'][index]}</strong>
+                        <strong>${['자사몰', '스마트스토어', '쿠팡 윙', '로켓그로스'][index]}</strong>
                         <input class="form-input" type="number" id="metric-${channel}-visits" min="0" placeholder="방문자 수">
                         <input class="form-input" type="number" id="metric-${channel}-orders" min="0" placeholder="판매량">
                         <input class="form-input" type="number" id="metric-${channel}-revenue" min="0" placeholder="매출">
@@ -1788,32 +1926,43 @@ async function handleDailyMetricSubmit(event) {
     };
     assign('blog_views', 'metric-blog-views');
     assign('cafe_views', 'metric-cafe-views');
-    assign('keyword_search_volume', 'metric-search');
     assign('tracked_visits', 'metric-tracked-visits');
     assign('tracked_orders', 'metric-tracked-orders');
     assign('ad_spend', 'metric-ad-spend');
-    ['cafe24', 'coupang', 'smartstore'].forEach(channel => {
+    ['cafe24', 'smartstore', 'coupang_wing', 'coupang_growth'].forEach(channel => {
         assign(`${channel}_visits`, `metric-${channel}-visits`);
         assign(`${channel}_orders`, `metric-${channel}-orders`);
         assign(`${channel}_revenue`, `metric-${channel}-revenue`);
     });
     patch.data_completeness = completeness;
+    const keywordMetrics = [...document.querySelectorAll('.metric-keyword-volume')]
+        .filter(input => input.value !== '')
+        .map(input => ({ keyword: input.dataset.keyword, search_volume: Math.max(0, metricNumber(input.value)) }));
 
-    if (!Object.keys(completeness).length) {
+    if (!Object.keys(completeness).length && !keywordMetrics.length) {
         showToast('보완할 숫자를 하나 이상 입력해주세요', 'warning');
         button.disabled = false;
         button.innerHTML = '<i class="ri-save-line"></i> 저장하기';
         return;
     }
     try {
+        const productId = $('#metric-product').value;
+        const metricDate = $('#metric-date').value;
         await mergeDailyMarketingMetric(
-            $('#metric-product').value,
-            $('#metric-date').value,
+            productId,
+            metricDate,
             patch,
             'manual',
             { provider: 'manual_fallback', entered_at: new Date().toISOString() },
             'manual'
         );
+        await Promise.all(keywordMetrics.map(item => mergeDailyKeywordMetric(
+            productId,
+            metricDate,
+            item,
+            'manual',
+            { provider: 'manual_fallback', entered_at: new Date().toISOString() }
+        )));
     } catch (error) {
         showToast('저장 실패: ' + error.message, 'error');
         button.disabled = false;

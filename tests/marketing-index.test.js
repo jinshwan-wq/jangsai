@@ -53,6 +53,19 @@ assert.equal(total.attributableOrders, 2, '전환 분자는 방문자가 확보�
 assert.equal(total.channelPairsMeasured, 1, '측정 가능한 채널 수를 기록한다');
 assert.equal(total.revenue, 60000, '채널 매출을 합산한다');
 
+const splitCoupang = vm.runInContext(`({
+    sales: getMetricSales({
+        cafe24_orders: 1, smartstore_orders: 2, coupang_orders: 99,
+        coupang_wing_orders: 3, coupang_growth_orders: 4
+    }),
+    revenue: getMetricRevenue({
+        cafe24_revenue: 1000, smartstore_revenue: 2000, coupang_revenue: 99000,
+        coupang_wing_revenue: 3000, coupang_growth_revenue: 4000
+    })
+})`, context);
+assert.equal(splitCoupang.sales, 10, '쿠팡 윙과 로켓그로스를 분리 합산하고 기존 합계와 중복하지 않는다');
+assert.equal(splitCoupang.revenue, 10000, '분리된 쿠팡 매출을 합산한다');
+
 const zeroOrderMeasured = vm.runInContext(`aggregateMarketingMetrics([{
     blog_views: 10, cafe_views: 0, cafe24_visits: 5, cafe24_orders: 0,
     smartstore_visits: null, smartstore_orders: 0, coupang_visits: null, coupang_orders: 0,
@@ -95,6 +108,11 @@ const sheetResult = vm.runInContext(`parseGoogleSheetMetrics({
 assert.equal(sheetResult.length, 1);
 assert.equal(sheetResult[0].blog_views, 120);
 assert.equal(sheetResult[0].cafe_views, 80);
+assert.deepEqual(
+    JSON.parse(JSON.stringify(sheetResult[0].keyword_metrics)),
+    [{ keyword: '갈라431', search_volume: 100 }],
+    '검색량을 키워드별로 보존한다'
+);
 assert.equal(sheetResult[0].reported_total_revenue, 60000, '일 매출을 자사몰 매출로 오인하지 않는다');
 assert.equal('cafe24_revenue' in sheetResult[0], false, '채널 매출이 없으면 임의 귀속하지 않는다');
 

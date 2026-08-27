@@ -2313,6 +2313,51 @@ textarea.form-input {
 
 .marketing-kpi.accent strong { color: var(--accent-light); }
 
+.marketing-kpi.keyword-kpi {
+    grid-column: span 2;
+}
+
+.keyword-volume-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 8px;
+}
+
+.keyword-volume-list > span {
+    min-width: 110px;
+    padding: 9px 11px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: 8px;
+}
+
+.keyword-volume-list small,
+.keyword-volume-list strong {
+    display: block;
+}
+
+.keyword-volume-list small {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.keyword-volume-list strong {
+    margin-top: 3px;
+    color: var(--accent-light);
+    font-size: 1rem;
+}
+
+.keyword-empty {
+    display: block;
+    margin: 12px 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
 .metric-product-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -2442,6 +2487,23 @@ textarea.form-input {
     font-size: 0.66rem;
 }
 
+.daily-keyword-values {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+}
+
+.daily-keyword-values span {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+}
+
+.daily-keyword-values b {
+    margin-left: 4px;
+    color: var(--text-primary);
+}
+
 .marketing-empty-row {
     padding: 36px 12px;
     color: var(--text-muted);
@@ -2563,7 +2625,7 @@ textarea.form-input {
 
 .channel-entry-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
 }
 
