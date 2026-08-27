@@ -6,7 +6,7 @@
 
 채널 연결 시 필요한 Function Secret:
 
-- `CAFE24_API_TOKEN`
+- `CAFE24_CLIENT_ID`, `CAFE24_CLIENT_SECRET`
 - `SMARTSTORE_API_TOKEN`
 - `COUPANG_API_TOKEN`
 - `NAVER_SEARCH_API_KEY`, `NAVER_SEARCH_SECRET_KEY`, `NAVER_SEARCH_CUSTOMER_ID`
@@ -28,6 +28,18 @@ where provider = 'naver_search';
 
 판매채널은 실제 상품 ID와 계정의 API 사용 권한을 확인한 뒤
 `marketing_source_mappings`에 추가합니다. 연결 전 매핑은 활성화하지 않습니다.
+
+Cafe24는 대시보드 관리자의 `Cafe24 자동수집` 버튼으로 OAuth 연결합니다.
+개발자 앱 Redirect URI는 아래 주소를 사용하며 주문·상품·쇼핑몰 읽기 권한이 필요합니다.
+
+```text
+https://pfmrqsfmkdnhzjimqocr.supabase.co/functions/v1/cafe24-oauth/callback
+```
+
+연결된 access/refresh token은 Supabase Vault에 쇼핑몰별로 저장합니다. 2시간짜리
+access token이 만료되면 수집 함수가 refresh token을 갱신하고 새 refresh token도
+즉시 Vault에 교체 저장합니다. 같은 제품의 유료 판매 구성은 여러 상품번호를 합산하고
+증정·사은품·이벤트 상품은 자동 매핑에서 제외합니다.
 
 각 `marketing_source_mappings.config`에는 다음과 같은 비밀이 아닌 연결 설정을
 저장합니다.
@@ -54,7 +66,10 @@ where provider = 'naver_search';
 
 채널별 적용 기준:
 
-- 카페24: Admin API 주문·매출과 승인된 Analytics API 방문자를 연결할 수 있습니다.
+- 카페24: Admin API의 결제일 기준 주문 품목에서 상품별 판매수량·실결제 매출을
+  수집합니다. 취소·반품·교환 원품은 제외합니다. 같은 OAuth 토큰의
+  `mall.read_analytics` 권한으로 Analytics API의 상품별 상세페이지 조회수도
+  유입 지표로 함께 수집합니다. 쇼핑몰 전체 방문자를 상품마다 중복 귀속하지 않습니다.
 - 스마트스토어: 일반 판매자는 주문 API를 사용할 수 있지만 유입 통계 API는
   브랜드스토어와 API 데이터 솔루션 이용 가능 여부를 먼저 확인해야 합니다.
 - 쿠팡: Open API 주문·매출은 연결할 수 있습니다. 방문자·조회 통계는 공개 API가

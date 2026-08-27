@@ -13,6 +13,15 @@ type CollectionResult = {
   metrics?: MetricPatch;
   keywordSnapshots?: Array<{ keyword: string; search_volume: number }>;
 };
+type Cafe24Connection = {
+  mall_id: string;
+  access_token: string;
+  refresh_token: string;
+  access_token_expires_at: string;
+  refresh_token_expires_at: string;
+  scopes: string[];
+  status: string;
+};
 
 const ALLOWED_METRICS = new Set([
   'blog_views', 'cafe_views', 'content_views', 'keyword_search_volume',
@@ -184,11 +193,201 @@ async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
   };
 }
 
-async function collectMapping(mapping: Mapping, metricDate: string): Promise<CollectionResult> {
+function numericValue(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+const cafe24AccessTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+async function getCafe24AccessToken(supabase: any, mallId: string) {
+  const cached = cafe24AccessTokenCache.get(mallId);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+
+  const { data, error } = await supabase.rpc('get_cafe24_connection', { p_mall_id: mallId });
+  if (error || !data) throw new Error(`${mallId} Cafe24 연결 정보가 없습니다.`);
+  const connection = data as Cafe24Connection;
+  const accessExpiresAt = new Date(connection.access_token_expires_at).getTime();
+  if (connection.access_token && accessExpiresAt > Date.now() + 5 * 60_000) {
+    cafe24AccessTokenCache.set(mallId, { token: connection.access_token, expiresAt: accessExpiresAt });
+    return connection.access_token;
+  }
+
+  const clientId = Deno.env.get('CAFE24_CLIENT_ID');
+  const clientSecret = Deno.env.get('CAFE24_CLIENT_SECRET');
+  if (!clientId || !clientSecret) throw new Error('Cafe24 개발자 앱 인증값이 설정되지 않았습니다.');
+  if (new Date(connection.refresh_token_expires_at).getTime() <= Date.now()) {
+    throw new Error(`${mallId} Cafe24 연결 갱신 기한이 만료되었습니다. 다시 연결하세요.`);
+  }
+
+  const response = await fetch(`https://${mallId}.cafe24api.com/api/v2/oauth/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: connection.refresh_token,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token || !payload.refresh_token) {
+    throw new Error(`${mallId} Cafe24 토큰 갱신 실패 (${response.status})`);
+  }
+
+  const { error: saveError } = await supabase.rpc('save_cafe24_connection', {
+    p_mall_id: mallId,
+    p_access_token: payload.access_token,
+    p_refresh_token: payload.refresh_token,
+    p_access_token_expires_at: payload.expires_at,
+    p_refresh_token_expires_at: payload.refresh_token_expires_at,
+    p_scopes: payload.scopes || connection.scopes || [],
+  });
+  if (saveError) throw new Error(`${mallId} Cafe24 갱신 토큰 저장 실패`);
+  const expiresAt = new Date(payload.expires_at).getTime();
+  cafe24AccessTokenCache.set(mallId, { token: payload.access_token, expiresAt });
+  return payload.access_token as string;
+}
+
+function cafe24ItemRevenue(item: Record<string, unknown>) {
+  const paymentAmount = numericValue(item.payment_amount);
+  if (paymentAmount !== null) return Math.max(0, paymentAmount);
+  const quantity = Math.max(0, numericValue(item.quantity) || 0);
+  const unitPrice = (numericValue(item.product_price) || 0) + (numericValue(item.option_price) || 0);
+  const discounts = [
+    item.additional_discount_price,
+    item.coupon_discount_price,
+    item.app_item_discount_amount,
+    item.market_discount_amount,
+  ].reduce((sum, value) => sum + (numericValue(value) || 0), 0);
+  return Math.max(0, unitPrice * quantity - discounts);
+}
+
+function findRecordArray(value: unknown, requiredKey: string): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    if (!value.length || value.some(item => item && typeof item === 'object' && requiredKey in item)) {
+      return value as Record<string, unknown>[];
+    }
+    for (const item of value) {
+      const nested = findRecordArray(item, requiredKey);
+      if (nested.length) return nested;
+    }
+  } else if (value && typeof value === 'object') {
+    for (const nestedValue of Object.values(value)) {
+      const nested = findRecordArray(nestedValue, requiredKey);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+async function collectCafe24ProductViews(mallId: string, productNos: Set<string>, metricDate: string, token: string) {
+  let offset = 0;
+  let views = 0;
+  const found = new Set<string>();
+  while (offset <= 15_000) {
+    const url = new URL('https://ca-api.cafe24data.com/products/view');
+    url.searchParams.set('mall_id', mallId);
+    url.searchParams.set('shop_no', '1');
+    url.searchParams.set('start_date', metricDate);
+    url.searchParams.set('end_date', metricDate);
+    url.searchParams.set('device_type', 'total');
+    url.searchParams.set('timezone', 'Asia/Seoul');
+    url.searchParams.set('limit', '1000');
+    url.searchParams.set('offset', String(offset));
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      console.warn(`${mallId} Cafe24 상품 조회수 응답 오류 (${response.status})`);
+      return null;
+    }
+    const payload = await response.json();
+    const records = findRecordArray(payload, 'product_no');
+    for (const record of records) {
+      const productNo = String(record.product_no);
+      if (!productNos.has(productNo)) continue;
+      found.add(productNo);
+      views += Math.max(0, numericValue(record.count) || 0);
+    }
+    if (found.size === productNos.size || records.length < 1000) return views;
+    offset += 1000;
+  }
+  return views;
+}
+
+async function collectCafe24(mapping: Mapping, metricDate: string, supabase: any): Promise<CollectionResult> {
+  const mallId = String(mapping.config?.mall_id || '').trim().toLowerCase();
+  const configuredProductNos = Array.isArray(mapping.config?.product_nos)
+    ? mapping.config.product_nos.map(String)
+    : [mapping.config?.product_no || mapping.external_id].filter(Boolean).map(String);
+  const productNos = new Set(configuredProductNos.map(value => value.trim()).filter(value => /^\d+$/.test(value)));
+  if (!/^[a-z0-9][a-z0-9_-]{1,39}$/.test(mallId)) throw new Error('Cafe24 쇼핑몰 ID가 설정되지 않았습니다.');
+  if (!productNos.size) throw new Error('Cafe24 상품번호가 설정되지 않았습니다.');
+  const token = await getCafe24AccessToken(supabase, mallId);
+
+  let offset = 0;
+  let salesQuantity = 0;
+  let revenue = 0;
+  while (offset <= 15_000) {
+    const url = new URL(`https://${mallId}.cafe24api.com/api/v2/admin/orders`);
+    url.searchParams.set('start_date', `${metricDate} 00:00:00`);
+    url.searchParams.set('end_date', `${metricDate} 23:59:59`);
+    url.searchParams.set('date_type', 'pay_date');
+    url.searchParams.set('payment_status', 'P');
+    url.searchParams.set('product_no', [...productNos].join(','));
+    url.searchParams.set('embed', 'items');
+    url.searchParams.set('limit', '1000');
+    url.searchParams.set('offset', String(offset));
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) throw new Error(`${mallId} Cafe24 주문 응답 오류 (${response.status})`);
+    const payload = await response.json();
+    const orders = Array.isArray(payload.orders) ? payload.orders : [];
+    for (const order of orders) {
+      const items = Array.isArray(order.items) ? order.items : [];
+      for (const rawItem of items) {
+        const item = rawItem as Record<string, unknown>;
+        if (!productNos.has(String(item.product_no))) continue;
+        if (['C1', 'C2', 'C3', 'E1'].includes(String(item.status_code || ''))) continue;
+        const quantity = Math.max(0, numericValue(item.quantity) || 0);
+        salesQuantity += quantity;
+        revenue += cafe24ItemRevenue(item);
+      }
+    }
+    if (orders.length < 1000) break;
+    offset += 1000;
+  }
+
+  const visits = await collectCafe24ProductViews(mallId, productNos, metricDate, token);
+  const metrics: MetricPatch = {
+    cafe24_orders: Math.round(salesQuantity),
+    cafe24_revenue: Math.round(revenue),
+    data_completeness: {
+      cafe24_orders: true,
+      cafe24_revenue: true,
+      ...(visits === null ? {} : { cafe24_visits: true }),
+    },
+  };
+  if (visits !== null) metrics.cafe24_visits = Math.round(visits);
+  return { metrics };
+}
+
+async function collectMapping(mapping: Mapping, metricDate: string, supabase: any): Promise<CollectionResult> {
   if (mapping.provider === 'google_sheets') {
     throw new Error('Google Sheets는 전환 기간의 수동 보조 수집원입니다.');
   }
   if (mapping.provider === 'naver_search') return collectNaverSearch(mapping);
+  if (mapping.provider === 'cafe24') return collectCafe24(mapping, metricDate, supabase);
 
   const endpoint = mapping.config?.endpoint;
   if (!endpoint) throw new Error(`${mapping.provider} 수집 주소가 설정되지 않았습니다.`);
@@ -299,7 +498,7 @@ Deno.serve(async request => {
     let failed = 0;
     for (const mapping of providerMappings) {
       try {
-        const collection = await collectMapping(mapping, metricDate);
+        const collection = await collectMapping(mapping, metricDate, supabase);
         const sourceDetails = {
           provider,
           mapping_id: mapping.id,

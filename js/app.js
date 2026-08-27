@@ -1134,6 +1134,45 @@ function renderDailyKeywordValues(date) {
     ).join('')}</div>`;
 }
 
+async function connectCafe24(mallId, button) {
+    const original = button?.innerHTML;
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner"></span> 연결 준비';
+    }
+    try {
+        const { data, error } = await sb.functions.invoke('cafe24-oauth', {
+            body: { mall_id: mallId },
+        });
+        if (error || !data?.authorize_url) throw new Error(data?.error || error?.message || '연결 주소를 만들지 못했습니다.');
+        window.location.href = data.authorize_url;
+    } catch (error) {
+        showToast(error.message || 'Cafe24 연결을 시작하지 못했습니다.', 'error');
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = original;
+        }
+    }
+}
+
+function handleCafe24OAuthResult() {
+    const url = new URL(window.location.href);
+    const result = url.searchParams.get('cafe24');
+    if (!result) return;
+    const mallId = url.searchParams.get('mall_id') || '';
+    const mallLabel = mallId === 'innerium' ? '이너리움' : mallId === 'jgohdapt' ? '유랄' : 'Cafe24';
+    if (result === 'connected') {
+        const detail = url.searchParams.get('message');
+        showToast(`${mallLabel} Cafe24 연결 완료${detail ? ` · ${detail}` : ''}`, 'success');
+    } else {
+        showToast(url.searchParams.get('message') || `${mallLabel} Cafe24 연결에 실패했습니다.`, 'error');
+    }
+    url.searchParams.delete('cafe24');
+    url.searchParams.delete('mall_id');
+    url.searchParams.delete('message');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
 function localDateString(date) {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1405,6 +1444,15 @@ function renderFunnelDashboardView() {
                 ${renderPeriodOptions(state.marketingPeriod)}
             </select>
         </section>
+
+        ${state.profile?.role_id === 'admin' ? `
+        <section class="channel-connection-panel">
+            <div><i class="ri-store-2-line"></i><span><strong>Cafe24 자동수집</strong><small>상품별 판매량·매출을 매일 09시에 수집합니다.</small></span></div>
+            <div>
+                <button class="btn btn-secondary btn-sm" onclick="connectCafe24('innerium', this)">이너리움 연결</button>
+                <button class="btn btn-secondary btn-sm" onclick="connectCafe24('jgohdapt', this)">유랄 연결</button>
+            </div>
+        </section>` : ''}
 
         <section class="funnel-panel">
             <div class="funnel-heading">
@@ -3009,7 +3057,8 @@ async function init() {
 
             if (state.profile && isProfileApproved(state.profile)) {
                 hideLoadingScreen();
-                navigate('dashboard');
+                await navigate('dashboard');
+                handleCafe24OAuthResult();
             } else if (state.profile) {
                 const status = getApprovalStatus(state.profile);
                 await sb.auth.signOut();

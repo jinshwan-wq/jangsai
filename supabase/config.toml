@@ -1,2 +1,5 @@
 [functions.collect-marketing]
 verify_jwt = false
+
+[functions.cafe24-oauth]
+verify_jwt = false

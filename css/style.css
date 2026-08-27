@@ -2090,6 +2090,38 @@ textarea.form-input {
     background: var(--accent-gradient);
 }
 
+.channel-connection-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+    padding: 14px 16px;
+    background: rgba(99, 102, 241, 0.06);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: var(--radius-sm);
+}
+
+.channel-connection-panel > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.channel-connection-panel > div:first-child > i {
+    color: var(--accent-light);
+    font-size: 1.25rem;
+}
+
+.channel-connection-panel span {
+    display: grid;
+    gap: 2px;
+}
+
+.channel-connection-panel small {
+    color: var(--text-muted);
+}
+
 .funnel-panel {
     padding: 26px;
     background:
@@ -2784,6 +2816,7 @@ textarea.form-input {
 
     .internal-hero,
     .marketing-toolbar,
+    .channel-connection-panel,
     .report-header {
         align-items: flex-start;
         flex-direction: column;
