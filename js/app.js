@@ -1356,11 +1356,11 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('월 누적 매출', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).revenue) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-megaphone-line"></i> 마케팅 광고비</th></tr>
-                ${renderReportRow('브랜드 일 소진액', dates, metricsByDate, (metric, date) => {
+                ${renderReportRow(`${product.brand} 일 광고비`, dates, metricsByDate, (metric, date) => {
                     const value = dailyAdSpend(metric, date);
                     return value === null ? '<span class="report-no-data">—</span>' : won(value);
                 })}
-                ${renderReportRow('브랜드 월 누적 소진액', dates, metricsByDate, (_metric, date) => won(monthAggregate(date).ad_spend), { total: true })}
+                ${renderReportRow(`${product.brand} 월 누적 광고비`, dates, metricsByDate, (_metric, date) => won(monthAggregate(date).ad_spend), { total: true })}
 
             </tbody>
         </table>

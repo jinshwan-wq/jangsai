@@ -148,6 +148,7 @@ vm.runInContext(`
     state.user = { id: 'user-1', email: 'employee@jangsai.local' };
     state.profile = { role_id: 'employee', display_name: '테스트 직원' };
     state.marketingProducts = [{ id: 'product-1', brand: '테스트브랜드', name: '테스트상품', slug: 'test', sort_order: 1 }];
+    state.marketingBrandMetrics = [{ brand: '테스트브랜드', metric_date: '${today}', naver_ad_spend: 4321 }];
     state.marketingMetrics = [{
         product_id: 'product-1', metric_date: '${today}',
         blog_views: 100, cafe_views: 100, cafe24_visits: 20, cafe24_orders: 2,
@@ -163,6 +164,8 @@ assert.match(funnelHtml, /노출지수/);
 assert.match(funnelHtml, /데이터 완성도/);
 const reportTableHtml = vm.runInContext('renderDailyReportTable(state.marketingProducts[0])', context);
 assert.match(reportTableHtml, /테스트상품 블로그 방문자 수\(조회수\)/);
+assert.match(reportTableHtml, /테스트브랜드 일 광고비[\s\S]*4,321원/);
+assert.match(reportTableHtml, /테스트브랜드 월 누적 광고비[\s\S]*4,321원/);
 assert.match(
     vm.runInContext(`(() => {
         state.marketingMetrics[0].blog_views = null;
