@@ -7,9 +7,11 @@
 채널 연결 시 필요한 Function Secret:
 
 - `CAFE24_CLIENT_ID`, `CAFE24_CLIENT_SECRET`
-- `SMARTSTORE_API_TOKEN`
-- `COUPANG_API_TOKEN`
+- `SMARTSTORE_INGEST_SECRET`
+- `COUPANG_WING_INGEST_SECRET`
 - `NAVER_SEARCH_API_KEY`, `NAVER_SEARCH_SECRET_KEY`, `NAVER_SEARCH_CUSTOMER_ID`
+- `NAVER_AD_INNERIUM_API_KEY`, `NAVER_AD_INNERIUM_SECRET_KEY`
+- `NAVER_AD_YURAL_API_KEY`, `NAVER_AD_YURAL_SECRET_KEY`
 - 필요 시 `NAVER_CONTENT_API_TOKEN`
 - `ALLOWED_MARKETING_HOSTS`: 회사가 관리하는 정규화 API 호스트 목록(쉼표 구분)
 
@@ -70,12 +72,28 @@ access token이 만료되면 수집 함수가 refresh token을 갱신하고 새 
   수집합니다. 취소·반품·교환 원품은 제외합니다. 같은 OAuth 토큰의
   `mall.read_analytics` 권한으로 Analytics API의 상품별 상세페이지 조회수도
   유입 지표로 함께 수집합니다. 쇼핑몰 전체 방문자를 상품마다 중복 귀속하지 않습니다.
-- 스마트스토어: 일반 판매자는 주문 API를 사용할 수 있지만 유입 통계 API는
-  브랜드스토어와 API 데이터 솔루션 이용 가능 여부를 먼저 확인해야 합니다.
-- 쿠팡: Open API 주문·매출은 연결할 수 있습니다. 방문자·조회 통계는 공개 API가
-  없어 Wing의 허용된 내보내기 방식이 확인될 때까지 미수집으로 둡니다. 주문과
-  매출은 `coupang_wing_*`, `coupang_growth_*`로 나눠 저장합니다.
+- 스마트스토어: 네이버 커머스API가 고정 출구 IP를 강제하고 Supabase Edge
+  Functions는 고정 출구 IP를 제공하지 않으므로 현재 Windows PC의 작업 스케줄러가
+  매일 09:10에 `tools/collect-smartstore.mjs`를 실행합니다. API 시크릿과 수집
+  토큰은 현재 Windows 사용자에게 귀속된 DPAPI 암호문으로 저장되며, 원문 파일로
+  남기지 않습니다. 결제일 기준 상품 주문의 `remainQuantity`와
+  `remainPaymentAmount`를 사용해 취소·반품을 반영한 판매량과 매출을 저장합니다.
+  일반 스마트스토어의 방문·유입 통계 API는 제공되지 않으며 브랜드스토어가 API
+  데이터 솔루션을 구독한 경우에만 별도 연결할 수 있습니다.
+- 쿠팡: 공개 API 대신 현재 Windows PC의 전용 Chrome 프로필 두 개에서 로그인된
+  Wing 판매분석 원본을 읽습니다. `npm run setup:coupang`으로 이너리움·유랄
+  전용 창을 처음 한 번 열고 각 계정으로 로그인합니다. 작업 스케줄러는 매일
+  스마트스토어 수집 후 `tools/run-coupang-wing-collector.ps1`을 실행합니다.
+  옵션별 방문자·판매량·매출을 판매자배송(`coupang_wing_*`)과 로켓그로스
+  (`coupang_growth_*`)로 나눠 저장하고, 화면의 공식 합계와 옵션 합계가 완전히
+  일치하지 않거나 미매핑 판매 상품이 있으면 해당 계정의 기존 값을 덮어쓰지 않습니다.
+  공유 토큰은 현재 Windows 사용자에게 귀속된 DPAPI 암호문으로만 로컬에 저장합니다.
 - 네이버 검색량: 검색광고 Keyword Tool API를 함수가 직접 호출하고 합계가 아닌
-  키워드별 30일 검색량 스냅샷으로 저장합니다.
-- 네이버 블로그·카페 조회수: 공식 일괄 조회 API가 확인되지 않은 경우 임의
-  크롤링하지 않고 허용된 내보내기 또는 별도 정규화 수집원을 연결합니다.
+  키워드별 30일 검색량 스냅샷으로 저장합니다. 이너리움(`1226483`)과
+  유랄(`4131809`)은 각 광고계정의 자체 API 인증값으로 캠페인 통계 `salesAmt`를
+  조회하며, 제품별로 복제하지 않고 브랜드 일 소진액으로 한 번만 저장합니다.
+- 네이버 블로그 방문자 수: `marketing_contents`에 등록된 공개 블로그별 날짜별
+  방문자 XML을 읽어 원본을 `daily_content_metrics`에 저장하고, 해당 제품의 활성
+  블로그가 모두 수집된 날만 합계를 `blog_views`로 반영합니다. 통감크림·명가본환은
+  각 15개, 갈라431·민티431은 각 10개를 합산합니다.
+- 네이버 카페 조회수: 수집 방식 확정 전까지 자동 수집하지 않습니다.

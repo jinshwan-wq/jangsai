@@ -77,6 +77,7 @@ const state = {
     categoryFilter: 'all',
     marketingProducts: [],
     marketingMetrics: [],
+    marketingBrandMetrics: [],
     marketingTargets: [],
     marketingRuns: [],
     marketingBatches: [],
@@ -265,6 +266,7 @@ async function loadMarketingData() {
     const [
         { data: products, error: productError },
         { data: metrics, error: metricError },
+        { data: brandMetrics, error: brandMetricError },
         { data: targets, error: targetError },
         { data: runs, error: runError },
         { data: batches, error: batchError },
@@ -273,6 +275,7 @@ async function loadMarketingData() {
     ] = await Promise.all([
         sb.from('marketing_products').select('*').eq('is_active', true).order('sort_order'),
         sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
+        sb.from('daily_brand_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
         sb.from('marketing_targets').select('*').order('period_start', { ascending: false }),
         sb.from('marketing_ingestion_runs').select('*').order('started_at', { ascending: false }).limit(30),
         sb.from('marketing_ingestion_batches').select('*').order('started_at', { ascending: false }).limit(10),
@@ -290,6 +293,7 @@ async function loadMarketingData() {
 
     state.marketingProducts = products?.length ? products : DEFAULT_MARKETING_PRODUCTS;
     state.marketingMetrics = metrics || [];
+    state.marketingBrandMetrics = brandMetricError ? [] : (brandMetrics || []);
     state.marketingTargets = targetError ? [] : (targets || []);
     state.marketingRuns = runError ? [] : (runs || []);
     state.marketingBatches = batchError ? [] : (batches || []);
@@ -814,7 +818,7 @@ function getPeriodBounds(period) {
 }
 
 function aggregateMarketingMetrics(metrics) {
-    return metrics.reduce((total, metric) => {
+    const total = metrics.reduce((total, metric) => {
         total.blog_views += metricNumber(metric.blog_views);
         total.cafe_views += metricNumber(metric.cafe_views);
         total.content_views += getMetricExposure(metric);
@@ -848,6 +852,26 @@ function aggregateMarketingMetrics(metrics) {
         measuredChannels: new Set(), missingChannels: new Set(),
         failedRecords: 0, partialRecords: 0,
     });
+    const productsById = new Map(state.marketingProducts.map(product => [product.id, product]));
+    const scopeKeys = new Set(metrics.map(metric => {
+        const brand = productsById.get(metric.product_id)?.brand;
+        return brand ? `${brand}:${metric.metric_date}` : '';
+    }).filter(Boolean));
+    const brandMetrics = state.marketingBrandMetrics.filter(metric =>
+        scopeKeys.has(`${metric.brand}:${metric.metric_date}`)
+    );
+    if (brandMetrics.length) {
+        const coveredKeys = new Set(brandMetrics.map(metric => `${metric.brand}:${metric.metric_date}`));
+        const coveredLegacySpend = metrics.reduce((sum, metric) => {
+            const brand = productsById.get(metric.product_id)?.brand;
+            return coveredKeys.has(`${brand}:${metric.metric_date}`)
+                ? sum + metricNumber(metric.ad_spend)
+                : sum;
+        }, 0);
+        total.ad_spend = total.ad_spend - coveredLegacySpend +
+            brandMetrics.reduce((sum, metric) => sum + metricNumber(metric.naver_ad_spend), 0);
+    }
+    return total;
 }
 
 function percent(numerator, denominator) {
@@ -1269,6 +1293,14 @@ function renderDailyReportTable(product) {
         const month = date.slice(0, 7);
         return aggregateMarketingMetrics(productMetrics.filter(metric => metric.metric_date.startsWith(month) && metric.metric_date <= date));
     };
+    const brandAdSpendByDate = new Map(
+        state.marketingBrandMetrics
+            .filter(metric => metric.brand === product.brand)
+            .map(metric => [metric.metric_date, metricNumber(metric.naver_ad_spend)])
+    );
+    const dailyAdSpend = (metric, date) => brandAdSpendByDate.has(date)
+        ? brandAdSpendByDate.get(date)
+        : nullableMetricNumber(metric?.ad_spend);
     const won = value => formatWon(value);
 
     return `
@@ -1298,7 +1330,7 @@ function renderDailyReportTable(product) {
                     },
                     { indent: true }
                 )).join('')}
-                ${renderReportRow('블로그 방문자 수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.blog_views)) : '<span class="report-no-data">—</span>')}
+                ${renderReportRow(`${product.name} 블로그 방문자 수(조회수)`, dates, metricsByDate, metric => metric && nullableMetricNumber(metric.blog_views) !== null ? formatMetric(metric.blog_views) : '<span class="report-no-data">—</span>')}
                 ${renderReportRow('카페 글 조회수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.cafe_views)) : '<span class="report-no-data">—</span>')}
                 ${renderReportRow('노출 합계', dates, metricsByDate, metric => metric ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
@@ -1324,8 +1356,11 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('월 누적 매출', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).revenue) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-megaphone-line"></i> 마케팅 광고비</th></tr>
-                ${renderReportRow('일 광고비', dates, metricsByDate, metric => reportMetricValue(metric, 'ad_spend', won))}
-                ${renderReportRow('월 누적 광고비', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).ad_spend) : '<span class="report-no-data">—</span>', { total: true })}
+                ${renderReportRow('브랜드 일 소진액', dates, metricsByDate, (metric, date) => {
+                    const value = dailyAdSpend(metric, date);
+                    return value === null ? '<span class="report-no-data">—</span>' : won(value);
+                })}
+                ${renderReportRow('브랜드 월 누적 소진액', dates, metricsByDate, (_metric, date) => won(monthAggregate(date).ad_spend), { total: true })}
 
             </tbody>
         </table>
@@ -1397,17 +1432,36 @@ function renderFunnelDashboardView() {
     const brands = [...new Set(state.marketingProducts.map(product => product.brand))];
     const expectedDate = kstDateString(-1);
     const expectedBatch = state.marketingBatches.find(batch => batch.metric_date === expectedDate);
+    const latestLocalRuns = new Map();
+    state.marketingRuns
+        .filter(run => run.metric_date === expectedDate && ['smartstore', 'coupang'].includes(run.provider))
+        .forEach(run => {
+            const key = run.provider === 'coupang'
+                ? `coupang:${run.details?.account || 'unknown'}`
+                : run.provider;
+            if (!latestLocalRuns.has(key)) latestLocalRuns.set(key, run);
+        });
+    const failedLocalRun = [...latestLocalRuns.values()].find(run => run.status === 'failed');
+    const allLocalRunsSucceeded = ['smartstore', 'coupang:innerium', 'coupang:yural']
+        .every(key => latestLocalRuns.get(key)?.status === 'success');
     const batchAgeMinutes = expectedBatch ? (Date.now() - new Date(expectedBatch.started_at).getTime()) / 60000 : 0;
-    const runStatus = expectedBatch?.status === 'running' && batchAgeMinutes > 30
+    let runStatus = expectedBatch?.status === 'running' && batchAgeMinutes > 30
         ? 'failed'
         : (expectedBatch?.status || 'skipped');
-    const runLabel = {
+    if (failedLocalRun) runStatus = expectedBatch?.status === 'success' ? 'partial' : 'failed';
+    else if (expectedBatch?.status === 'success' && !allLocalRunsSucceeded) runStatus = 'partial';
+    const runLabel = failedLocalRun
+        ? `${failedLocalRun.provider === 'coupang' ? '쿠팡' : '스마트스토어'} 자동수집 실패`
+        : ({
         success: '09시 자동수집 완료',
         partial: '일부 채널 수집',
         failed: '자동수집 실패',
         running: '자동수집 중',
         skipped: '자동수집 설정 대기',
-    }[runStatus] || '수집 상태 확인';
+    }[runStatus] || '수집 상태 확인');
+    const runError = failedLocalRun?.error_message ||
+        failedLocalRun?.details?.errors?.[0] ||
+        '';
 
     return `
     ${renderNavbar()}
@@ -1419,7 +1473,8 @@ function renderFunnelDashboardView() {
                 <p>노출부터 검색, 유입, 판매까지 매일 같은 기준으로 확인합니다.</p>
             </div>
             <div class="internal-actions">
-                <span class="sync-status ${['failed', 'partial', 'skipped'].includes(runStatus) ? 'waiting' : ''}">
+                <span class="sync-status ${['failed', 'partial', 'skipped'].includes(runStatus) ? 'waiting' : ''}"
+                      ${runError ? `title="${escapeHtml(runError)}"` : ''}>
                     <i class="${runStatus === 'success' ? 'ri-checkbox-circle-line' : 'ri-time-line'}"></i>
                     ${runLabel}
                 </span>

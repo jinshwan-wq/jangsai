@@ -82,6 +82,21 @@ const missingOrder = vm.runInContext(`aggregateMarketingMetrics([{
 }])`, context);
 assert.equal(missingOrder.channelPairsMeasured, 0, '주문 미수집 0을 실제 0건으로 오인하지 않는다');
 
+const brandAdSpend = vm.runInContext(`(() => {
+    state.marketingProducts = [
+        { id: 'gala', brand: '이너리움' },
+        { id: 'minti', brand: '이너리움' }
+    ];
+    state.marketingBrandMetrics = [
+        { brand: '이너리움', metric_date: '2026-08-26', naver_ad_spend: 500 }
+    ];
+    return aggregateMarketingMetrics([
+        { product_id: 'gala', metric_date: '2026-08-26', ad_spend: 100 },
+        { product_id: 'minti', metric_date: '2026-08-26', ad_spend: 200 }
+    ]).ad_spend;
+})()`, context);
+assert.equal(brandAdSpend, 500, '브랜드 광고비를 제품 수만큼 중복 합산하지 않는다');
+
 assert.equal(vm.runInContext('getIndexStatus(79.9)', context), 'danger');
 assert.equal(vm.runInContext('getIndexStatus(80)', context), 'stable');
 assert.equal(vm.runInContext('getIndexStatus(120)', context), 'stable');
@@ -146,6 +161,16 @@ vm.runInContext(`
 const funnelHtml = vm.runInContext('renderFunnelDashboardView()', context);
 assert.match(funnelHtml, /노출지수/);
 assert.match(funnelHtml, /데이터 완성도/);
+const reportTableHtml = vm.runInContext('renderDailyReportTable(state.marketingProducts[0])', context);
+assert.match(reportTableHtml, /테스트상품 블로그 방문자 수\(조회수\)/);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingMetrics[0].blog_views = null;
+        return renderDailyReportTable(state.marketingProducts[0]);
+    })()`, context),
+    /테스트상품 블로그 방문자 수\(조회수\)[\s\S]*report-no-data/,
+    '블로그 수집값이 없으면 0이 아닌 미수집으로 표시한다'
+);
 const okrHtml = vm.runInContext('renderOkrDashboardView()', context);
 assert.match(okrHtml, /분기·연간 목표/);
 assert.match(okrHtml, /목표 600,000/, '브랜드 월 20만 뷰를 분기 60만 뷰 목표로 집계한다');

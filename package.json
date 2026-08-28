@@ -1,0 +1,26 @@
+{
+  "name": "jangsai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Jangs AI internal dashboard",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "collect:smartstore": "node tools/collect-smartstore.mjs",
+    "collect:coupang": "node tools/collect-coupang-wing.mjs",
+    "setup:coupang": "node tools/collect-coupang-wing.mjs --setup"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jinshwan-wq/jangsai.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/jinshwan-wq/jangsai/issues"
+  },
+  "homepage": "https://github.com/jinshwan-wq/jangsai#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.3"
+  }
+}

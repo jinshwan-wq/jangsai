@@ -1,4 +1,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  buildNaverBlogMetricPatch,
+  parseNaverBlogId,
+  parseNaverBlogVisitorXml,
+} from './blog-visitors.mjs';
 
 type Mapping = {
   id: string;
@@ -12,6 +17,9 @@ type MetricPatch = Record<string, number | Record<string, boolean>>;
 type CollectionResult = {
   metrics?: MetricPatch;
   keywordSnapshots?: Array<{ keyword: string; search_volume: number }>;
+  contentMetrics?: Array<{ content_id: string; views: number }>;
+  contentErrors?: string[];
+  expectedContentCount?: number;
 };
 type Cafe24Connection = {
   mall_id: string;
@@ -43,6 +51,17 @@ const PROVIDER_TOKEN_ENV: Record<string, string> = {
   naver_blog: 'NAVER_CONTENT_API_TOKEN',
   naver_cafe: 'NAVER_CONTENT_API_TOKEN',
   generic_json: 'GENERIC_MARKETING_API_TOKEN',
+};
+
+const NAVER_AD_CREDENTIALS: Record<string, { apiKey: string; secretKey: string }> = {
+  innerium: {
+    apiKey: 'NAVER_AD_INNERIUM_API_KEY',
+    secretKey: 'NAVER_AD_INNERIUM_SECRET_KEY',
+  },
+  yural: {
+    apiKey: 'NAVER_AD_YURAL_API_KEY',
+    secretKey: 'NAVER_AD_YURAL_SECRET_KEY',
+  },
 };
 
 function previousKstDate() {
@@ -149,36 +168,42 @@ async function hmacBase64(secret: string, value: string) {
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
-  const apiKey = Deno.env.get('NAVER_SEARCH_API_KEY');
-  const secretKey = Deno.env.get('NAVER_SEARCH_SECRET_KEY');
-  const customerId = Deno.env.get('NAVER_SEARCH_CUSTOMER_ID');
-  if (!apiKey || !secretKey || !customerId) {
+async function naverSearchHeaders(method: string, uri: string, customerId?: string, credentialsKey?: string) {
+  const credentialNames = credentialsKey ? NAVER_AD_CREDENTIALS[credentialsKey] : null;
+  if (credentialsKey && !credentialNames) throw new Error('허용되지 않은 네이버 광고 인증 설정입니다.');
+  const apiKey = Deno.env.get(credentialNames?.apiKey || 'NAVER_SEARCH_API_KEY');
+  const secretKey = Deno.env.get(credentialNames?.secretKey || 'NAVER_SEARCH_SECRET_KEY');
+  const targetCustomerId = customerId || Deno.env.get('NAVER_SEARCH_CUSTOMER_ID');
+  if (!apiKey || !secretKey || !targetCustomerId) {
     throw new Error('네이버 검색광고 API 인증값이 설정되지 않았습니다.');
   }
+  const timestamp = Date.now().toString();
+  return {
+    'X-Timestamp': timestamp,
+    'X-API-KEY': apiKey,
+    'X-Customer': targetCustomerId,
+    'X-Signature': await hmacBase64(secretKey, `${timestamp}.${method}.${uri}`),
+  };
+}
 
+async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
   const configuredKeywords = Array.isArray(mapping.config?.keywords)
     ? mapping.config.keywords.map(String)
     : [mapping.external_id].filter(Boolean).map(String);
   if (!configuredKeywords.length) throw new Error('브랜드 검색 키워드가 설정되지 않았습니다.');
 
   const uri = '/keywordstool';
-  const timestamp = Date.now().toString();
-  const signature = await hmacBase64(secretKey, `${timestamp}.GET.${uri}`);
   const url = new URL(`https://api.searchad.naver.com${uri}`);
-  url.searchParams.set('hintKeywords', configuredKeywords.join(','));
+  url.searchParams.set('hintKeywords', configuredKeywords.map(keyword => keyword.replace(/\s+/g, '')).join(','));
   url.searchParams.set('showDetail', '1');
   const response = await fetch(url, {
-    headers: {
-      'X-Timestamp': timestamp,
-      'X-API-KEY': apiKey,
-      'X-Customer': customerId,
-      'X-Signature': signature,
-    },
+    headers: await naverSearchHeaders('GET', uri),
     signal: AbortSignal.timeout(20_000),
   });
-  if (!response.ok) throw new Error(`네이버 검색량 응답 오류 (${response.status})`);
-  const payload = await response.json();
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`네이버 검색량 응답 오류 (${response.status}): ${payload?.title || payload?.message || payload?.code || '응답 오류'}`);
+  }
   const wanted = new Set(configuredKeywords.map(keyword => keyword.replace(/\s+/g, '').toLowerCase()));
   const volumes = (payload.keywordList || []).flatMap((item: Record<string, unknown>) => {
     const keyword = String(item.relKeyword || '').replace(/\s+/g, '').toLowerCase();
@@ -191,6 +216,58 @@ async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
   return {
     keywordSnapshots: volumes,
   };
+}
+
+function sumNaverSalesAmount(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + sumNaverSalesAmount(item), 0);
+  }
+  if (!value || typeof value !== 'object') return 0;
+  return Object.entries(value as Record<string, unknown>).reduce((sum, [key, item]) => {
+    if (key === 'salesAmt') {
+      const amount = Number(item);
+      return sum + (Number.isFinite(amount) ? amount : 0);
+    }
+    return sum + sumNaverSalesAmount(item);
+  }, 0);
+}
+
+async function collectNaverAdSpend(customerId: string, metricDate: string, credentialsKey: string) {
+  const campaignUri = '/ncc/campaigns';
+  const campaignResponse = await fetch(`https://api.searchad.naver.com${campaignUri}`, {
+    headers: await naverSearchHeaders('GET', campaignUri, customerId, credentialsKey),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const campaigns = await campaignResponse.json().catch(() => []);
+  if (!campaignResponse.ok) {
+    const message = campaigns?.title || campaigns?.message || campaigns?.code || '응답 오류';
+    throw new Error(`네이버 광고계정 ${customerId} 캠페인 조회 실패 (${campaignResponse.status}): ${message}`);
+  }
+  const campaignIds = (Array.isArray(campaigns) ? campaigns : [])
+    .map((campaign: Record<string, unknown>) => String(campaign.nccCampaignId || ''))
+    .filter(Boolean);
+  if (!campaignIds.length) return 0;
+
+  let spend = 0;
+  for (let offset = 0; offset < campaignIds.length; offset += 100) {
+    const uri = '/stats';
+    const url = new URL(`https://api.searchad.naver.com${uri}`);
+    url.searchParams.set('ids', campaignIds.slice(offset, offset + 100).join(','));
+    url.searchParams.set('fields', JSON.stringify(['salesAmt']));
+    url.searchParams.set('timeRange', JSON.stringify({ since: metricDate, until: metricDate }));
+    url.searchParams.set('timeIncrement', 'allDays');
+    const response = await fetch(url, {
+      headers: await naverSearchHeaders('GET', uri, customerId, credentialsKey),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.title || payload?.message || payload?.code || '응답 오류';
+      throw new Error(`네이버 광고계정 ${customerId} 소진액 조회 실패 (${response.status}): ${message}`);
+    }
+    spend += sumNaverSalesAmount(payload);
+  }
+  return Math.max(0, Math.round(spend));
 }
 
 function numericValue(value: unknown) {
@@ -382,12 +459,89 @@ async function collectCafe24(mapping: Mapping, metricDate: string, supabase: any
   return { metrics };
 }
 
+function wait(milliseconds: number) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function fetchNaverBlogVisitors(blogId: string, metricDate: string) {
+  const url = new URL('https://blog.naver.com/NVisitorgp4Ajax.naver');
+  url.searchParams.set('blogId', blogId);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (compatible; JangsAIMarketingCollector/1.0)',
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return parseNaverBlogVisitorXml(await response.text(), metricDate);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await wait(attempt * 350);
+    }
+  }
+
+  const reason = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${blogId} 방문자 수 수집 실패: ${reason}`);
+}
+
+async function collectNaverBlog(mapping: Mapping, metricDate: string, supabase: any): Promise<CollectionResult> {
+  const { data: contents, error } = await supabase
+    .from('marketing_contents')
+    .select('id,url')
+    .eq('product_id', mapping.product_id)
+    .eq('channel', 'naver_blog')
+    .eq('is_active', true)
+    .order('url');
+  if (error) throw error;
+  if (!contents?.length) throw new Error('활성 네이버 블로그가 등록되지 않았습니다.');
+
+  const contentMetrics: Array<{ content_id: string; views: number }> = [];
+  const contentErrors: string[] = [];
+  const concurrency = 3;
+
+  for (let offset = 0; offset < contents.length; offset += concurrency) {
+    const batch = contents.slice(offset, offset + concurrency);
+    const results = await Promise.allSettled(batch.map(async (content: { id: string; url: string }) => ({
+      content_id: content.id,
+      views: await fetchNaverBlogVisitors(parseNaverBlogId(content.url), metricDate),
+    })));
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        contentMetrics.push(result.value);
+      } else {
+        const blogId = (() => {
+          try {
+            return parseNaverBlogId(batch[index].url);
+          } catch {
+            return batch[index].url;
+          }
+        })();
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        contentErrors.push(`${blogId}: ${reason}`);
+      }
+    });
+    if (offset + concurrency < contents.length) await wait(200);
+  }
+
+  return {
+    contentMetrics,
+    contentErrors,
+    expectedContentCount: contents.length,
+  };
+}
+
 async function collectMapping(mapping: Mapping, metricDate: string, supabase: any): Promise<CollectionResult> {
   if (mapping.provider === 'google_sheets') {
     throw new Error('Google Sheets는 전환 기간의 수동 보조 수집원입니다.');
   }
   if (mapping.provider === 'naver_search') return collectNaverSearch(mapping);
   if (mapping.provider === 'cafe24') return collectCafe24(mapping, metricDate, supabase);
+  if (mapping.provider === 'naver_blog') return collectNaverBlog(mapping, metricDate, supabase);
 
   const endpoint = mapping.config?.endpoint;
   if (!endpoint) throw new Error(`${mapping.provider} 수집 주소가 설정되지 않았습니다.`);
@@ -496,6 +650,7 @@ Deno.serve(async request => {
 
     let succeeded = 0;
     let failed = 0;
+    const runErrors: string[] = [];
     for (const mapping of providerMappings) {
       try {
         const collection = await collectMapping(mapping, metricDate, supabase);
@@ -521,6 +676,36 @@ Deno.serve(async request => {
             })),
             { onConflict: 'product_id,snapshot_date,keyword,provider' },
           ));
+        } else if (provider === 'naver_blog') {
+          const contentMetrics = collection.contentMetrics || [];
+          if (contentMetrics.length) {
+            ({ error } = await supabase.from('daily_content_metrics').upsert(
+              contentMetrics.map(item => ({
+                content_id: item.content_id,
+                metric_date: metricDate,
+                views: item.views,
+                source: 'api',
+                updated_at: new Date().toISOString(),
+              })),
+              { onConflict: 'content_id,metric_date' },
+            ));
+            if (error) throw error;
+          }
+          const contentErrors = collection.contentErrors || [];
+          const expectedCount = collection.expectedContentCount || 0;
+          const patch = buildNaverBlogMetricPatch(contentMetrics, contentErrors, expectedCount);
+          ({ error } = await supabase.rpc('merge_daily_marketing_metric', {
+            p_product_id: mapping.product_id,
+            p_metric_date: metricDate,
+            p_patch: patch,
+            p_source: 'api',
+            p_source_details: {
+              ...sourceDetails,
+              collector: 'naver_blog_daily_visitors',
+              blog_count: contentMetrics.length,
+            },
+            p_collection_status: 'partial',
+          }));
         } else {
           const patch = collection.metrics || {};
           ({ error } = await supabase.rpc('merge_daily_marketing_metric', {
@@ -547,14 +732,57 @@ Deno.serve(async request => {
         succeeded++;
       } catch (error) {
         failed++;
+        const message = error instanceof Error ? error.message : String(error);
+        runErrors.push(message);
         await supabase.from('marketing_ingestion_errors').insert({
           run_id: run.id,
           product_id: mapping.product_id,
           provider,
           error_code: 'COLLECTION_FAILED',
-          message: error instanceof Error ? error.message : String(error),
+          message,
           details: { mapping_id: mapping.id, external_id: mapping.external_id },
         });
+      }
+    }
+
+    if (provider === 'naver_search') {
+      const adAccounts = new Map<string, { brand: string; customerId: string; credentialsKey: string }>();
+      for (const mapping of providerMappings) {
+        const brand = String(mapping.config?.ad_brand || '').trim();
+        const customerId = String(mapping.config?.ad_customer_id || '').trim();
+        const credentialsKey = String(mapping.config?.ad_credentials_key || '').trim();
+        if (brand && /^\d+$/.test(customerId) && NAVER_AD_CREDENTIALS[credentialsKey]) {
+          adAccounts.set(`${brand}:${customerId}`, { brand, customerId, credentialsKey });
+        }
+      }
+      for (const { brand, customerId, credentialsKey } of adAccounts.values()) {
+        try {
+          const adSpend = await collectNaverAdSpend(customerId, metricDate, credentialsKey);
+          const { error } = await supabase.rpc('merge_daily_brand_ad_spend', {
+            p_brand: brand,
+            p_metric_date: metricDate,
+            p_naver_ad_spend: adSpend,
+            p_source_details: {
+              provider,
+              customer_id: customerId,
+              collector: 'naver_searchad_stats',
+              collected_at: new Date().toISOString(),
+            },
+          });
+          if (error) throw error;
+          succeeded++;
+        } catch (error) {
+          failed++;
+          const message = error instanceof Error ? error.message : String(error);
+          runErrors.push(message);
+          await supabase.from('marketing_ingestion_errors').insert({
+            run_id: run.id,
+            provider,
+            error_code: 'AD_SPEND_COLLECTION_FAILED',
+            message,
+            details: { brand, customer_id: customerId },
+          });
+        }
       }
     }
 
@@ -566,6 +794,10 @@ Deno.serve(async request => {
         finished_at: new Date().toISOString(),
         records_succeeded: succeeded,
         records_failed: failed,
+        details: {
+          trigger: body.trigger || 'manual',
+          errors: runErrors,
+        },
       })
       .eq('id', run.id);
     summary.push({ provider, status, succeeded, failed });

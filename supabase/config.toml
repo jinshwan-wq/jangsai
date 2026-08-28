@@ -3,3 +3,9 @@ verify_jwt = false
 
 [functions.cafe24-oauth]
 verify_jwt = false
+
+[functions.ingest-smartstore]
+verify_jwt = false
+
+[functions.ingest-coupang]
+verify_jwt = false
