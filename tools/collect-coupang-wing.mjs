@@ -30,6 +30,9 @@ const ACCOUNTS = [
     ],
   },
 ];
+const PRODUCT_RULES = ACCOUNTS.flatMap(account =>
+  account.products.map(rule => ({ ...rule, accountKey: account.key }))
+);
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function decryptWindows(value) {
@@ -57,6 +60,24 @@ function productSlug(account, productName) {
   return account.products.find(rule =>
     rule.keywords.some(keyword => normalized.includes(normalizeName(keyword)))
   )?.slug || null;
+}
+
+function detectWingAccount(profileAccount, page) {
+  const detectedKeys = new Set();
+  for (const row of page.rows) {
+    const normalized = normalizeName(row.productName);
+    const rule = PRODUCT_RULES.find(candidate =>
+      candidate.keywords.some(keyword => normalized.includes(normalizeName(keyword)))
+    );
+    if (rule) detectedKeys.add(rule.accountKey);
+  }
+  if (detectedKeys.size !== 1) {
+    const detected = [...detectedKeys].join(', ') || '없음';
+    throw new Error(
+      `${profileAccount.label} 프로필에서 실제 Wing 계정을 판별하지 못했습니다. 감지 계정: ${detected}`,
+    );
+  }
+  return ACCOUNTS.find(account => account.key === [...detectedKeys][0]);
 }
 
 function kstYesterday() {
@@ -372,6 +393,7 @@ async function main() {
   if (!config.ingestSecret) throw new Error('쿠팡 Wing 보안 설정이 없습니다.');
 
   const failures = [];
+  const detectedAccountsByDate = new Map();
   for (const account of accounts) {
     let activeDate = requestedDates()[0];
     try {
@@ -379,19 +401,29 @@ async function main() {
       for (const metricDate of requestedDates()) {
         activeDate = metricDate;
         const page = await readSalesPage(account, metricDate);
-        const metrics = aggregate(account, page, metricDate);
+        const detectedAccount = detectWingAccount(account, page);
+        if (!detectedAccountsByDate.has(metricDate)) detectedAccountsByDate.set(metricDate, new Set());
+        const detectedAccounts = detectedAccountsByDate.get(metricDate);
+        if (detectedAccounts.has(detectedAccount.key)) {
+          throw new Error(
+            `${metricDate} ${detectedAccount.label} 계정이 두 Chrome 프로필에서 중복 감지되었습니다.`,
+          );
+        }
+        detectedAccounts.add(detectedAccount.key);
+        const metrics = aggregate(detectedAccount, page, metricDate);
         if (process.argv.includes('--inspect')) {
           console.log(JSON.stringify({
             metric_date: metricDate,
-            account: account.key,
+            profile: account.key,
+            account: detectedAccount.key,
             summary: page.summary,
             rows: page.rows,
             metrics,
           }, null, 2));
         } else {
-          await ingest(metricDate, account, metrics, config);
+          await ingest(metricDate, detectedAccount, metrics, config);
           console.log(
-            `${metricDate} ${account.label} 수집 완료: ` +
+            `${metricDate} ${account.label} 프로필 → ${detectedAccount.label} 계정 수집 완료: ` +
             metrics.map(metric =>
               `${metric.product_slug} ` +
               `판매자배송 ${metric.wing.orders}개/${metric.wing.revenue}원, ` +
@@ -403,6 +435,17 @@ async function main() {
     } catch (error) {
       await reportFailure(activeDate, account, error, config);
       failures.push(`${account.label}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (accounts.length === ACCOUNTS.length) {
+    for (const metricDate of requestedDates()) {
+      const detectedAccounts = detectedAccountsByDate.get(metricDate) || new Set();
+      const missingAccounts = ACCOUNTS.filter(account => !detectedAccounts.has(account.key));
+      if (missingAccounts.length) {
+        failures.push(
+          `${metricDate} 미수집 Wing 계정: ${missingAccounts.map(account => account.label).join(', ')}`,
+        );
+      }
     }
   }
   if (failures.length) throw new Error(failures.join('\n'));
