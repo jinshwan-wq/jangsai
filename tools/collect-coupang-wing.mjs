@@ -256,6 +256,7 @@ const PARSE_EXPRESSION = `
     orders: cardValue('판매량'),
     revenue: cardValue('매출 (원)'),
   };
+  const rowVisits = rows.reduce((sum, row) => sum + row.visits, 0);
   const rowOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const rowRevenue = rows.reduce((sum, row) => sum + row.revenue, 0);
   return {
@@ -263,8 +264,8 @@ const PARSE_EXPRESSION = `
     title: document.title,
     bodyText: document.body.innerText.slice(0, 2000),
     ready: document.body.innerText.includes('옵션목록') &&
-      summary.orders !== null && summary.revenue !== null &&
-      rowOrders === summary.orders && rowRevenue === summary.revenue,
+      summary.visits !== null && summary.orders !== null && summary.revenue !== null &&
+      rowVisits === summary.visits && rowOrders === summary.orders && rowRevenue === summary.revenue,
     rows,
     summary,
   };
@@ -299,15 +300,21 @@ async function readSalesPage(account, metricDate) {
 }
 
 function aggregate(account, page, metricDate) {
+  const pageVisits = page.rows.reduce((sum, row) => sum + row.visits, 0);
   const pageOrders = page.rows.reduce((sum, row) => sum + row.orders, 0);
   const pageRevenue = page.rows.reduce((sum, row) => sum + row.revenue, 0);
-  if (page.summary.orders === null || page.summary.revenue === null) {
+  if (page.summary.visits === null || page.summary.orders === null || page.summary.revenue === null) {
     throw new Error(`${account.label} ${metricDate} 공식 합계 카드가 없습니다.`);
   }
-  if (pageOrders !== page.summary.orders || pageRevenue !== page.summary.revenue) {
+  if (
+    pageVisits !== page.summary.visits ||
+    pageOrders !== page.summary.orders ||
+    pageRevenue !== page.summary.revenue
+  ) {
     throw new Error(
-      `${account.label} ${metricDate} 합계 불일치: 옵션 ${pageOrders}개/${pageRevenue}원, ` +
-      `Wing 합계 ${page.summary.orders}개/${page.summary.revenue}원`,
+      `${account.label} ${metricDate} 합계 불일치: ` +
+      `옵션 방문 ${pageVisits}명/판매 ${pageOrders}개/${pageRevenue}원, ` +
+      `Wing 방문 ${page.summary.visits}명/판매 ${page.summary.orders}개/${page.summary.revenue}원`,
     );
   }
 
