@@ -5,9 +5,9 @@
   "description": "Jangs AI internal dashboard",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "collect:smartstore": "node tools/collect-smartstore.mjs",
-    "collect:coupang": "node tools/collect-coupang-wing.mjs",
-    "setup:coupang": "node tools/collect-coupang-wing.mjs --setup"
+    "collect:cafe-views": "node tools/collect-cafe-views.mjs",
+    "backfill:cafe-views": "node tools/collect-cafe-views.mjs --backfill-history",
+    "setup:cafe-views": "node tools/collect-cafe-views.mjs --setup"
   },
   "repository": {
     "type": "git",

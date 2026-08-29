@@ -9,3 +9,9 @@ verify_jwt = false
 
 [functions.ingest-coupang]
 verify_jwt = false
+
+[functions.grok-marketing-bridge]
+verify_jwt = false
+
+[functions.ingest-cafe-views]
+verify_jwt = false

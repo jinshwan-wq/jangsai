@@ -1856,7 +1856,7 @@ textarea.form-input {
 }
 
 .excel-report-table .report-product-cell {
-    width: 230px;
+    width: 280px;
     color: #fff;
     text-align: left;
     background: linear-gradient(135deg, color-mix(in srgb, var(--report-accent) 38%, #111c34), #111c34);
@@ -1884,6 +1884,12 @@ textarea.form-input {
     background: rgba(10, 17, 40, 0.9);
     font-size: 0.84rem;
     font-weight: 600;
+}
+
+.excel-report-table tbody tr:not(.report-section-row) > th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
 }
 
 .excel-report-table tbody td {
@@ -2052,6 +2058,80 @@ textarea.form-input {
     color: var(--warning);
     background: var(--warning-bg);
     border-color: rgba(245, 158, 11, 0.2);
+}
+
+.grok-bridge-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+    padding: 13px 16px;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+}
+
+.grok-bridge-main {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    min-width: 0;
+}
+
+.grok-bridge-main > i {
+    flex: 0 0 auto;
+    font-size: 1.35rem;
+}
+
+.grok-bridge-main span {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.grok-bridge-main strong {
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.grok-bridge-main small,
+.grok-bridge-seen {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.grok-bridge-seen {
+    flex: 0 0 auto;
+}
+
+.grok-bridge-status.success {
+    border-color: rgba(16, 185, 129, 0.22);
+}
+
+.grok-bridge-status.success .grok-bridge-main > i {
+    color: var(--success);
+}
+
+.grok-bridge-status.waiting,
+.grok-bridge-status.setup {
+    border-color: rgba(245, 158, 11, 0.22);
+}
+
+.grok-bridge-status.waiting .grok-bridge-main > i,
+.grok-bridge-status.setup .grok-bridge-main > i {
+    color: var(--warning);
+}
+
+.grok-bridge-status.error {
+    background: var(--error-bg);
+    border-color: rgba(239, 68, 68, 0.28);
+}
+
+.grok-bridge-status.error .grok-bridge-main > i,
+.grok-bridge-status.error .grok-bridge-main strong {
+    color: var(--error);
 }
 
 .marketing-toolbar {
@@ -2817,6 +2897,7 @@ textarea.form-input {
     .internal-hero,
     .marketing-toolbar,
     .channel-connection-panel,
+    .grok-bridge-status,
     .report-header {
         align-items: flex-start;
         flex-direction: column;

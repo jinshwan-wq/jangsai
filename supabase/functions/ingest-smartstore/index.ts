@@ -2,8 +2,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 type SmartstoreMetric = {
   product_slug: string;
-  orders: number;
-  revenue: number;
+  orders?: number;
+  revenue?: number;
+  visits?: number;
+  pay_count?: number;
+  conversion_rate?: number;
 };
 
 function validDate(value: unknown): value is string {
@@ -13,10 +16,15 @@ function validDate(value: unknown): value is string {
 function validMetric(value: unknown): value is SmartstoreMetric {
   if (!value || typeof value !== 'object') return false;
   const metric = value as Record<string, unknown>;
+  const hasSales = Number.isSafeInteger(metric.orders) && Number(metric.orders) >= 0 &&
+    Number.isSafeInteger(metric.revenue) && Number(metric.revenue) >= 0;
+  const hasAnalytics = Number.isSafeInteger(metric.visits) && Number(metric.visits) >= 0 &&
+    Number.isSafeInteger(metric.pay_count) && Number(metric.pay_count) >= 0 &&
+    typeof metric.conversion_rate === 'number' &&
+    Number.isFinite(metric.conversion_rate) && Number(metric.conversion_rate) >= 0;
   return typeof metric.product_slug === 'string' &&
     /^[a-z0-9-]{3,80}$/.test(metric.product_slug) &&
-    Number.isSafeInteger(metric.orders) && Number(metric.orders) >= 0 &&
-    Number.isSafeInteger(metric.revenue) && Number(metric.revenue) >= 0;
+    (hasSales || hasAnalytics);
 }
 
 async function secureEqual(left: string, right: string) {
@@ -47,7 +55,12 @@ Deno.serve(async request => {
 
   const body = await request.json().catch(() => ({}));
   const metrics = Array.isArray(body.metrics) ? body.metrics : [];
-  if (!validDate(body.metric_date) || !metrics.length || metrics.length > 20 || !metrics.every(validMetric)) {
+  const isFailureReport = body.status === 'failed';
+  const failureMessage = typeof body.error === 'string' ? body.error.trim().slice(0, 500) : '';
+  if (
+    !validDate(body.metric_date) ||
+    (isFailureReport ? !failureMessage : (!metrics.length || metrics.length > 20 || !metrics.every(validMetric)))
+  ) {
     return Response.json({ error: '수집 데이터 형식이 올바르지 않습니다.' }, { status: 400 });
   }
 
@@ -59,6 +72,39 @@ Deno.serve(async request => {
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  if (isFailureReport) {
+    const details = {
+      trigger: body.trigger || 'local_windows_scheduler',
+      account: body.account || 'unknown',
+      collector: body.collector || 'local_windows_scheduler',
+      errors: [failureMessage],
+    };
+    const { data: run, error: runError } = await supabase
+      .from('marketing_ingestion_runs')
+      .insert({
+        provider: 'smartstore',
+        metric_date: body.metric_date,
+        status: 'failed',
+        finished_at: new Date().toISOString(),
+        records_failed: 1,
+        details,
+        error_message: failureMessage,
+      })
+      .select('id')
+      .single();
+    if (runError || !run) {
+      return Response.json({ error: runError?.message || '실패 이력을 기록하지 못했습니다.' }, { status: 500 });
+    }
+    await supabase.from('marketing_ingestion_errors').insert({
+      run_id: run.id,
+      provider: 'smartstore',
+      error_code: 'local_traffic_collector_failed',
+      message: failureMessage,
+      details: { account: body.account || 'unknown' },
+    });
+    return Response.json({ ok: true, reported: true });
+  }
 
   const slugs = [...new Set(metrics.map((metric: SmartstoreMetric) => metric.product_slug))];
   const { data: products, error: productError } = await supabase
@@ -79,6 +125,8 @@ Deno.serve(async request => {
       metric_date: body.metric_date,
       details: {
         trigger: body.trigger || 'local_windows_scheduler',
+        account: body.account || null,
+        collector: body.collector || 'local_windows_scheduler',
         account_count: Number(body.account_count) || 0,
       },
     })
@@ -91,27 +139,44 @@ Deno.serve(async request => {
   let succeeded = 0;
   const errors: string[] = [];
   for (const metric of metrics as SmartstoreMetric[]) {
-    const { error } = await supabase.rpc('merge_daily_marketing_metric', {
-      p_product_id: productIds.get(metric.product_slug),
-      p_metric_date: body.metric_date,
-      p_patch: {
-        smartstore_orders: metric.orders,
-        smartstore_revenue: metric.revenue,
-        data_completeness: {
-          smartstore_orders: true,
-          smartstore_revenue: true,
+    const sourceDetails = {
+      provider: 'smartstore',
+      collector: body.collector || 'local_windows_scheduler',
+      accounts: body.accounts || (body.account ? [body.account] : []),
+      warnings: Array.isArray(body.warnings) ? body.warnings.slice(0, 20) : [],
+      collected_at: new Date().toISOString(),
+    };
+    let metricError = null;
+    if (Number.isSafeInteger(metric.orders) && Number.isSafeInteger(metric.revenue)) {
+      const { error } = await supabase.rpc('merge_daily_marketing_metric', {
+        p_product_id: productIds.get(metric.product_slug),
+        p_metric_date: body.metric_date,
+        p_patch: {
+          smartstore_orders: metric.orders,
+          smartstore_revenue: metric.revenue,
+          data_completeness: {
+            smartstore_orders: true,
+            smartstore_revenue: true,
+          },
         },
-      },
-      p_source: 'api',
-      p_source_details: {
-        provider: 'smartstore',
-        collector: 'local_windows_scheduler',
-        accounts: body.accounts || [],
-        collected_at: new Date().toISOString(),
-      },
-      p_collection_status: 'partial',
-    });
-    if (error) errors.push(`${metric.product_slug}: ${error.message}`);
+        p_source: 'api',
+        p_source_details: sourceDetails,
+        p_collection_status: 'partial',
+      });
+      metricError = error;
+    }
+    if (!metricError && Number.isSafeInteger(metric.visits) && Number.isSafeInteger(metric.pay_count)) {
+      const { error } = await supabase.rpc('merge_daily_smartstore_analytics', {
+        p_product_id: productIds.get(metric.product_slug),
+        p_metric_date: body.metric_date,
+        p_visits: metric.visits,
+        p_pay_count: metric.pay_count,
+        p_conversion_rate: metric.conversion_rate,
+        p_source_details: sourceDetails,
+      });
+      metricError = error;
+    }
+    if (metricError) errors.push(`${metric.product_slug}: ${metricError.message}`);
     else succeeded++;
   }
 
@@ -125,7 +190,10 @@ Deno.serve(async request => {
       records_failed: failed,
       details: {
         trigger: body.trigger || 'local_windows_scheduler',
+        account: body.account || null,
+        collector: body.collector || 'local_windows_scheduler',
         account_count: Number(body.account_count) || 0,
+        warnings: Array.isArray(body.warnings) ? body.warnings.slice(0, 20) : [],
         errors,
       },
     })

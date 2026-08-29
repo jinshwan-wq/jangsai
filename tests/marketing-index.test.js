@@ -52,6 +52,7 @@ assert.equal(total.orders, 9, '총판매량은 세 채널을 모두 합산한다
 assert.equal(total.attributableOrders, 2, '전환 분자는 방문자가 확보된 동일 채널 주문만 사용한다');
 assert.equal(total.channelPairsMeasured, 1, '측정 가능한 채널 수를 기록한다');
 assert.equal(total.revenue, 60000, '채널 매출을 합산한다');
+assert.equal(total.adSpendComplete, true, '0보다 큰 기존 광고비 기록도 수집값으로 취급한다');
 
 const splitCoupang = vm.runInContext(`({
     sales: getMetricSales({
@@ -65,6 +66,23 @@ const splitCoupang = vm.runInContext(`({
 })`, context);
 assert.equal(splitCoupang.sales, 10, '쿠팡 윙과 로켓그로스를 분리 합산하고 기존 합계와 중복하지 않는다');
 assert.equal(splitCoupang.revenue, 10000, '분리된 쿠팡 매출을 합산한다');
+assert.equal(
+    vm.runInContext(`getMetricRevenue({
+        cafe24_revenue: 1000,
+        smartstore_revenue: 2000,
+        coupang_wing_revenue: 3000,
+        coupang_growth_revenue: 4000,
+        reported_total_revenue: 99999,
+        data_completeness: {
+            cafe24_revenue: true,
+            smartstore_revenue: true,
+            coupang_wing_revenue: true,
+            coupang_growth_revenue: true
+        }
+    })`, context),
+    10000,
+    '채널별 매출이 완성되면 과거 보고 총매출로 부풀리지 않는다'
+);
 
 const zeroOrderMeasured = vm.runInContext(`aggregateMarketingMetrics([{
     blog_views: 10, cafe_views: 0, cafe24_visits: 5, cafe24_orders: 0,
@@ -81,6 +99,39 @@ const missingOrder = vm.runInContext(`aggregateMarketingMetrics([{
     data_completeness: { cafe24_visits: true }
 }])`, context);
 assert.equal(missingOrder.channelPairsMeasured, 0, '주문 미수집 0을 실제 0건으로 오인하지 않는다');
+assert.equal(
+    vm.runInContext(`getChannelVisits({ cafe24_visits: 0 }, MARKETING_CHANNELS[0])`, context),
+    null,
+    '완성도 표시가 없는 0 방문은 실제 0이 아닌 미수집으로 처리한다'
+);
+const partialCoupang = vm.runInContext(`aggregateMarketingMetrics([{
+    coupang_wing_visits: 10, coupang_wing_orders: 1,
+    coupang_growth_visits: 0, coupang_growth_orders: 0,
+    data_completeness: { coupang_wing_visits: true, coupang_wing_orders: true }
+}])`, context);
+assert.equal(partialCoupang.channelPairsMeasured, 0, '쿠팡 윙·로켓그로스 중 한쪽만 수집되면 유입·전환 합계에서 제외한다');
+
+const missingAdSpend = vm.runInContext(`aggregateMarketingMetrics([{
+    product_id: 'missing-ad', metric_date: '2026-08-27', ad_spend: 0
+}])`, context);
+assert.equal(missingAdSpend.adSpendComplete, false, '광고비 미수집 0을 실제 0원으로 표시하지 않는다');
+const explicitlyIncompleteAdSpend = vm.runInContext(`aggregateMarketingMetrics([{
+    product_id: 'partial-ad', metric_date: '2026-08-27', ad_spend: 500,
+    data_completeness: { ad_spend: false }
+}])`, context);
+assert.equal(explicitlyIncompleteAdSpend.adSpendComplete, false, '양수 광고비라도 명시적 미완성 상태를 완료로 오인하지 않는다');
+
+const smartstoreAnalytics = vm.runInContext(`aggregateMarketingMetrics([{
+    blog_views: 10, cafe_views: 0, cafe24_visits: null, cafe24_orders: 0,
+    smartstore_visits: 100, smartstore_orders: 30, smartstore_pay_count: 5,
+    coupang_visits: null, coupang_orders: 0,
+    cafe24_revenue: 0, smartstore_revenue: 100000, coupang_revenue: 0,
+    data_completeness: { smartstore_visits: true, smartstore_orders: true, smartstore_pay_count: true }
+}])`, context);
+assert.equal(smartstoreAnalytics.orders, 30, '총판매량에는 스마트스토어 판매수량을 사용한다');
+assert.equal(smartstoreAnalytics.attributableOrders, 5, '스마트스토어 전환 분자에는 상품결제건수를 사용한다');
+assert.equal(smartstoreAnalytics.salesComplete, false, '일부 채널 판매량만 있으면 전체 판매량을 미완성으로 표시한다');
+assert.equal(smartstoreAnalytics.revenueComplete, false, '일부 채널 매출만 있으면 전체 매출을 미완성으로 표시한다');
 
 const brandAdSpend = vm.runInContext(`(() => {
     state.marketingProducts = [
@@ -96,6 +147,16 @@ const brandAdSpend = vm.runInContext(`(() => {
     ]).ad_spend;
 })()`, context);
 assert.equal(brandAdSpend, 500, '브랜드 광고비를 제품 수만큼 중복 합산하지 않는다');
+
+const sharedBrandKeywordCount = vm.runInContext(`(() => {
+    state.dailyKeywordMetrics = [
+        { product_id: 'gala', keyword: '이너리움', metric_date: '2026-08-28', search_volume: 570 },
+        { product_id: 'minti', keyword: '이너리움', metric_date: '2026-08-28', search_volume: 570 }
+    ];
+    state.marketingSearchSnapshots = [];
+    return getKeywordSearchOverview([], new Set(['gala', 'minti'])).length;
+})()`, context);
+assert.equal(sharedBrandKeywordCount, 1, '여러 제품을 볼 때 동일 브랜드 검색어를 중복 표시하지 않는다');
 
 assert.equal(vm.runInContext('getIndexStatus(79.9)', context), 'danger');
 assert.equal(vm.runInContext('getIndexStatus(80)', context), 'stable');
@@ -147,14 +208,19 @@ const today = new Date().toISOString().slice(0, 10);
 vm.runInContext(`
     state.user = { id: 'user-1', email: 'employee@jangsai.local' };
     state.profile = { role_id: 'employee', display_name: '테스트 직원' };
-    state.marketingProducts = [{ id: 'product-1', brand: '테스트브랜드', name: '테스트상품', slug: 'test', sort_order: 1 }];
+    state.marketingProducts = [
+        { id: 'product-1', brand: '테스트브랜드', name: '테스트상품', slug: 'test', sort_order: 1 },
+        { id: 'product-2', brand: '테스트브랜드', name: '두번째상품', slug: 'test-2', sort_order: 2 }
+    ];
     state.marketingBrandMetrics = [{ brand: '테스트브랜드', metric_date: '${today}', naver_ad_spend: 4321 }];
     state.marketingMetrics = [{
         product_id: 'product-1', metric_date: '${today}',
         blog_views: 100, cafe_views: 100, cafe24_visits: 20, cafe24_orders: 2,
-        smartstore_visits: null, smartstore_orders: 0, coupang_visits: null, coupang_orders: 0,
+        smartstore_visits: 38, smartstore_orders: 3, smartstore_pay_count: 2, smartstore_conversion_rate: 5.3,
+        coupang_visits: null, coupang_orders: 0,
         cafe24_revenue: 10000, smartstore_revenue: 0, coupang_revenue: 0,
-        keyword_search_volume: 50, site_visits: 0, tracked_visits: 0, tracked_orders: 0, ad_spend: 1000
+        keyword_search_volume: 50, site_visits: 0, tracked_visits: 0, tracked_orders: 0, ad_spend: 1000,
+        data_completeness: { cafe24_visits: true, cafe24_orders: true, smartstore_visits: true, smartstore_pay_count: true, smartstore_conversion_rate: true }
     }];
     state.marketingTargets = [];
     state.marketingRuns = [];
@@ -162,10 +228,41 @@ vm.runInContext(`
 const funnelHtml = vm.runInContext('renderFunnelDashboardView()', context);
 assert.match(funnelHtml, /노출지수/);
 assert.match(funnelHtml, /데이터 완성도/);
+assert.match(funnelHtml, /Grok Bot Bridge 연결 대기/);
+assert.match(funnelHtml, /전체 구매<\/span><strong>—<\/strong>/, '불완전 판매량을 전체 구매로 표시하지 않는다');
+assert.match(funnelHtml, /전체 매출<\/span><strong>—<\/strong>/, '불완전 매출을 전체 매출로 표시하지 않는다');
+assert.match(funnelHtml, /총 매출<\/span><strong>—<\/strong>/, '불완전 매출을 KPI 총매출로 표시하지 않는다');
+assert.match(funnelHtml, /ROAS<\/span><strong>—<\/strong>/, '매출 또는 광고비가 불완전하면 ROAS를 계산하지 않는다');
+const expectedMetricDate = vm.runInContext('kstDateString(-1)', context);
+const bridgeFailureHtml = vm.runInContext(`(() => {
+    state.marketingBridgeClients = [{
+        client_key: 'grok-marketing-ops',
+        last_seen_at: new Date().toISOString()
+    }];
+    state.marketingBridgeJobs = [{
+        metric_date: '${expectedMetricDate}',
+        provider: 'smartstore',
+        account: 'yural',
+        status: 'needs_login',
+        last_error: '로그인 만료'
+    }];
+    return renderFunnelDashboardView();
+})()`, context);
+assert.match(bridgeFailureHtml, /유랄 스마트스토어 재로그인 필요/);
+assert.match(bridgeFailureHtml, /로그인 만료/);
 const reportTableHtml = vm.runInContext('renderDailyReportTable(state.marketingProducts[0])', context);
 assert.match(reportTableHtml, /테스트상품 블로그 방문자 수\(조회수\)/);
-assert.match(reportTableHtml, /테스트브랜드 일 광고비[\s\S]*4,321원/);
-assert.match(reportTableHtml, /테스트브랜드 월 누적 광고비[\s\S]*4,321원/);
+assert.match(reportTableHtml, /스마트스토어 구매전환율[\s\S]*5\.3%/);
+assert.match(reportTableHtml, /테스트상품 일 광고비[\s\S]*1,000원/);
+assert.match(reportTableHtml, /테스트상품 월 누적 광고비[\s\S]*1,000원/);
+assert.equal(
+    vm.runInContext(`aggregateMarketingMetrics([
+        state.marketingMetrics[0],
+        { ...state.marketingMetrics[0], product_id: 'product-2', ad_spend: 2000 }
+    ]).ad_spend`, context),
+    4321,
+    '브랜드의 전체 제품을 선택했을 때만 브랜드 광고비 총액을 사용한다'
+);
 assert.match(
     vm.runInContext(`(() => {
         state.marketingMetrics[0].blog_views = null;
@@ -173,6 +270,86 @@ assert.match(
     })()`, context),
     /테스트상품 블로그 방문자 수\(조회수\)[\s\S]*report-no-data/,
     '블로그 수집값이 없으면 0이 아닌 미수집으로 표시한다'
+);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingMetrics[0].cafe_views = 0;
+        delete state.marketingMetrics[0].data_completeness.cafe_views;
+        return renderDailyReportTable(state.marketingProducts[0]);
+    })()`, context),
+    /카페 글 조회수[\s\S]*report-no-data/,
+    '카페 미수집 기본값 0도 실제 조회수 0으로 오인하지 않는다'
+);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingBatches = [{
+            metric_date: '${expectedMetricDate}', status: 'success',
+            started_at: new Date().toISOString(), details: {}
+        }];
+        state.marketingMetrics = state.marketingProducts.map(product => ({
+            product_id: product.id,
+            metric_date: '${expectedMetricDate}',
+            smartstore_visits: 0,
+            smartstore_pay_count: 0,
+            smartstore_conversion_rate: 0,
+            smartstore_orders: 0,
+            smartstore_revenue: 0,
+            coupang_wing_visits: 0,
+            coupang_wing_orders: 0,
+            coupang_wing_revenue: 0,
+            coupang_growth_visits: 0,
+            coupang_growth_orders: 0,
+            coupang_growth_revenue: 0,
+            data_completeness: {
+                smartstore_visits: true,
+                smartstore_pay_count: true,
+                smartstore_conversion_rate: true,
+                smartstore_orders: true,
+                smartstore_revenue: true,
+                coupang_wing_visits: true,
+                coupang_wing_orders: true,
+                coupang_wing_revenue: true,
+                coupang_growth_visits: true,
+                coupang_growth_orders: true,
+                coupang_growth_revenue: true
+            }
+        }));
+        state.marketingBridgeClients = [{
+            client_key: 'grok-marketing-ops',
+            last_seen_at: new Date().toISOString(),
+            details: { runbook_version: 6 }
+        }];
+        state.marketingBridgeJobs = [
+            { metric_date: '${expectedMetricDate}', provider: 'smartstore', account: 'innerium', status: 'completed' },
+            { metric_date: '${expectedMetricDate}', provider: 'smartstore', account: 'yural', status: 'completed' },
+            { metric_date: '${expectedMetricDate}', provider: 'coupang', account: 'innerium', status: 'completed' },
+            { metric_date: '${expectedMetricDate}', provider: 'coupang', account: 'yural', status: 'completed' }
+        ];
+        state.marketingRuns = [{
+            metric_date: '${expectedMetricDate}', provider: 'smartstore', status: 'failed',
+            error_message: '폐기된 로컬 수집기 오류'
+        }];
+        return renderFunnelDashboardView();
+    })()`, context),
+    /서버 API·Grok 자동수집 완료/,
+    '폐기된 로컬 로그인 수집기 오류가 현재 Grok 정상 상태를 덮어쓰지 않는다'
+);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingBridgeClients[0].details.runbook_version = 3;
+        return renderFunnelDashboardView();
+    })()`, context),
+    /Grok Bot 운영지침 업데이트 대기/,
+    '구버전 Grok 운영지침을 정상으로 표시하지 않는다'
+);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingBridgeJobs = [];
+        state.marketingMetrics = [];
+        return renderFunnelDashboardView();
+    })()`, context),
+    /Grok Bot 로그인 채널 수집 대기/,
+    'Bridge 접속만 있고 전일 채널 데이터가 없으면 완료로 오인하지 않는다'
 );
 const okrHtml = vm.runInContext('renderOkrDashboardView()', context);
 assert.match(okrHtml, /분기·연간 목표/);

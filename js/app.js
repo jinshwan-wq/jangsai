@@ -9,6 +9,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const EMAIL_DOMAIN = '@jangsai.local';
 const OWNER_EMAIL = 'kher2000@jangsai.local';
 const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbw_kV92ocY27UZGbnSJHhmYDlRK6gzqJDU76HV2VJAvybtmmRihz1vDthCGlvLvAC0/exec';
+const GROK_RUNBOOK_VERSION = 6;
 
 // --- 등급별 색상 ---
 const ROLE_COLORS = {
@@ -52,7 +53,7 @@ const MARKETING_INDEX_RULES = {
 
 const MARKETING_CHANNELS = [
     { id: 'cafe24', label: '자사몰', visits: 'cafe24_visits', legacyVisits: 'site_visits', orders: 'cafe24_orders', revenue: 'cafe24_revenue' },
-    { id: 'smartstore', label: '스마트스토어', visits: 'smartstore_visits', orders: 'smartstore_orders', revenue: 'smartstore_revenue' },
+    { id: 'smartstore', label: '스마트스토어', visits: 'smartstore_visits', orders: 'smartstore_orders', conversionOrders: 'smartstore_pay_count', revenue: 'smartstore_revenue' },
     { id: 'coupang', label: '쿠팡', visits: 'coupang_visits', orders: 'coupang_orders', revenue: 'coupang_revenue', combinedCoupang: true },
 ];
 
@@ -83,6 +84,8 @@ const state = {
     marketingBatches: [],
     marketingSearchSnapshots: [],
     dailyKeywordMetrics: [],
+    marketingBridgeJobs: [],
+    marketingBridgeClients: [],
     selectedMarketingProduct: 'all',
     marketingPeriod: '7d',
     marketingView: 'report',
@@ -258,6 +261,17 @@ async function loadPrograms() {
     }));
 }
 
+async function loadPagedMarketingRows(queryFactory, pageSize = 1000, maxRows = 10000) {
+    const rows = [];
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+        const { data, error } = await queryFactory().range(offset, offset + pageSize - 1);
+        if (error) return { data: null, error };
+        rows.push(...(data || []));
+        if ((data || []).length < pageSize) return { data: rows, error: null };
+    }
+    return { data: null, error: new Error(`마케팅 데이터가 ${maxRows.toLocaleString('ko-KR')}건을 초과했습니다.`) };
+}
+
 async function loadMarketingData() {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 370);
@@ -272,15 +286,31 @@ async function loadMarketingData() {
         { data: batches, error: batchError },
         { data: searchSnapshots, error: searchSnapshotError },
         { data: keywordMetrics, error: keywordMetricError },
+        { data: bridgeJobs, error: bridgeJobError },
+        { data: bridgeClients, error: bridgeClientError },
     ] = await Promise.all([
         sb.from('marketing_products').select('*').eq('is_active', true).order('sort_order'),
-        sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
-        sb.from('daily_brand_marketing_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
+        loadPagedMarketingRows(() =>
+            sb.from('daily_marketing_metrics').select('*').gte('metric_date', dateFrom)
+                .order('metric_date').order('product_id')
+        ),
+        loadPagedMarketingRows(() =>
+            sb.from('daily_brand_marketing_metrics').select('*').gte('metric_date', dateFrom)
+                .order('metric_date').order('brand')
+        ),
         sb.from('marketing_targets').select('*').order('period_start', { ascending: false }),
         sb.from('marketing_ingestion_runs').select('*').order('started_at', { ascending: false }).limit(30),
         sb.from('marketing_ingestion_batches').select('*').order('started_at', { ascending: false }).limit(10),
-        sb.from('keyword_search_snapshots').select('*').gte('snapshot_date', dateFrom).order('snapshot_date'),
-        sb.from('daily_keyword_metrics').select('*').gte('metric_date', dateFrom).order('metric_date'),
+        loadPagedMarketingRows(() =>
+            sb.from('keyword_search_snapshots').select('*').gte('snapshot_date', dateFrom)
+                .order('snapshot_date').order('product_id').order('keyword')
+        ),
+        loadPagedMarketingRows(() =>
+            sb.from('daily_keyword_metrics').select('*').gte('metric_date', dateFrom)
+                .order('metric_date').order('product_id').order('keyword')
+        ),
+        sb.from('marketing_bridge_jobs').select('*').gte('metric_date', dateFrom).order('updated_at', { ascending: false }).limit(100),
+        sb.from('marketing_bridge_clients').select('*').order('updated_at', { ascending: false }),
     ]);
 
     if (productError || metricError) {
@@ -299,6 +329,8 @@ async function loadMarketingData() {
     state.marketingBatches = batchError ? [] : (batches || []);
     state.marketingSearchSnapshots = searchSnapshotError ? [] : (searchSnapshots || []);
     state.dailyKeywordMetrics = keywordMetricError ? [] : (keywordMetrics || []);
+    state.marketingBridgeJobs = bridgeJobError ? [] : (bridgeJobs || []);
+    state.marketingBridgeClients = bridgeClientError ? [] : (bridgeClients || []);
     state.marketingDataReady = true;
 }
 
@@ -727,7 +759,10 @@ function getMetricSales(metric) {
 
 function getMetricRevenue(metric) {
     const channelRevenue = metricNumber(metric?.cafe24_revenue) + getCoupangMetric(metric, 'revenue') + metricNumber(metric?.smartstore_revenue);
-    return Math.max(channelRevenue, metricNumber(metric?.reported_total_revenue));
+    if (isRevenueComplete(metric)) return channelRevenue;
+    return hasCollectedMetric(metric, 'reported_total_revenue')
+        ? metricNumber(metric?.reported_total_revenue)
+        : channelRevenue;
 }
 
 function getMetricExposure(metric) {
@@ -740,34 +775,70 @@ function getMetricExposure(metric) {
 function getChannelVisits(metric, channel) {
     if (channel.combinedCoupang) {
         const value = getCoupangMetric(metric, 'visits');
-        const hasValue = nullableMetricNumber(metric?.coupang_visits) !== null ||
-            nullableMetricNumber(metric?.coupang_wing_visits) !== null ||
-            nullableMetricNumber(metric?.coupang_growth_visits) !== null;
-        return hasValue ? value : null;
+        return hasCollectedCoupangMetric(metric, 'visits') ? value : null;
     }
     const value = nullableMetricNumber(metric?.[channel.visits]);
-    if (value !== null) return value;
+    if (value !== null && hasCollectedMetric(metric, channel.visits)) return value;
     if (channel.legacyVisits && metricNumber(metric?.[channel.legacyVisits]) > 0) return metricNumber(metric[channel.legacyVisits]);
     return null;
 }
 
 function hasCollectedMetric(metric, key) {
-    if (metric?.data_completeness?.[key] === true) return true;
+    if (Object.prototype.hasOwnProperty.call(metric?.data_completeness || {}, key)) {
+        return metric.data_completeness[key] === true;
+    }
     return metricNumber(metric?.[key]) > 0;
+}
+
+function hasCollectedCoupangMetric(metric, suffix) {
+    const wingKey = `coupang_wing_${suffix}`;
+    const growthKey = `coupang_growth_${suffix}`;
+    const usesSplit = nullableMetricNumber(metric?.[wingKey]) !== null ||
+        nullableMetricNumber(metric?.[growthKey]) !== null ||
+        metric?.data_completeness?.[wingKey] === true ||
+        metric?.data_completeness?.[growthKey] === true;
+    return usesSplit
+        ? hasCollectedMetric(metric, wingKey) && hasCollectedMetric(metric, growthKey)
+        : hasCollectedMetric(metric, `coupang_${suffix}`);
+}
+
+function isSalesComplete(metric) {
+    return Boolean(metric) &&
+        hasCollectedMetric(metric, 'cafe24_orders') &&
+        hasCollectedMetric(metric, 'smartstore_orders') &&
+        hasCollectedCoupangMetric(metric, 'orders');
+}
+
+function isRevenueComplete(metric) {
+    return Boolean(metric) &&
+        hasCollectedMetric(metric, 'cafe24_revenue') &&
+        hasCollectedMetric(metric, 'smartstore_revenue') &&
+        hasCollectedCoupangMetric(metric, 'revenue');
+}
+
+function isExposureComplete(metric) {
+    return Boolean(metric) &&
+        hasCollectedMetric(metric, 'blog_views') &&
+        hasCollectedMetric(metric, 'cafe_views');
+}
+
+function areMetricsCollected(metrics, key) {
+    return metrics.length > 0 && metrics.every(metric => hasCollectedMetric(metric, key));
 }
 
 function isChannelPairMeasured(metric, channel) {
     if (channel.combinedCoupang) {
-        const hasOrders = hasCollectedMetric(metric, 'coupang_orders') ||
-            hasCollectedMetric(metric, 'coupang_wing_orders') ||
-            hasCollectedMetric(metric, 'coupang_growth_orders');
-        return getChannelVisits(metric, channel) !== null && hasOrders;
+        return getChannelVisits(metric, channel) !== null &&
+            hasCollectedCoupangMetric(metric, 'orders');
     }
-    return getChannelVisits(metric, channel) !== null && hasCollectedMetric(metric, channel.orders);
+    const conversionOrders = channel.conversionOrders || channel.orders;
+    return getChannelVisits(metric, channel) !== null && hasCollectedMetric(metric, conversionOrders);
 }
 
 function getChannelOrders(metric, channel) {
-    return channel.combinedCoupang ? getCoupangMetric(metric, 'orders') : metricNumber(metric?.[channel.orders]);
+    if (channel.combinedCoupang) return getCoupangMetric(metric, 'orders');
+    const conversionOrders = channel.conversionOrders || channel.orders;
+    return metricNumber(metric?.[conversionOrders]);
 }
 
 function getSelectedProductIds() {
@@ -829,6 +900,14 @@ function aggregateMarketingMetrics(metrics) {
         total.orders += getMetricSales(metric);
         total.revenue += getMetricRevenue(metric);
         total.ad_spend += metricNumber(metric.ad_spend);
+        total.exposureRecordsExpected++;
+        total.salesRecordsExpected++;
+        total.revenueRecordsExpected++;
+        total.adSpendRecordsExpected++;
+        if (isExposureComplete(metric)) total.exposureRecordsMeasured++;
+        if (isSalesComplete(metric)) total.salesRecordsMeasured++;
+        if (isRevenueComplete(metric)) total.revenueRecordsMeasured++;
+        if (hasCollectedMetric(metric, 'ad_spend')) total.adSpendRecordsMeasured++;
         MARKETING_CHANNELS.forEach(channel => {
             const visits = getChannelVisits(metric, channel);
             total.channelPairsExpected++;
@@ -848,20 +927,42 @@ function aggregateMarketingMetrics(metrics) {
         blog_views: 0, cafe_views: 0, content_views: 0, keyword_search_volume: 0,
         site_visits: 0, tracked_visits: 0, tracked_orders: 0, visits: 0,
         attributableOrders: 0, orders: 0, revenue: 0, ad_spend: 0,
+        exposureRecordsExpected: 0, exposureRecordsMeasured: 0,
+        salesRecordsExpected: 0, salesRecordsMeasured: 0,
+        revenueRecordsExpected: 0, revenueRecordsMeasured: 0,
+        adSpendRecordsExpected: 0, adSpendRecordsMeasured: 0,
         channelPairsExpected: 0, channelPairsMeasured: 0,
         measuredChannels: new Set(), missingChannels: new Set(),
         failedRecords: 0, partialRecords: 0,
     });
     const productsById = new Map(state.marketingProducts.map(product => [product.id, product]));
-    const scopeKeys = new Set(metrics.map(metric => {
+    const brandProductIds = new Map();
+    state.marketingProducts.forEach(product => {
+        const ids = brandProductIds.get(product.brand) || new Set();
+        ids.add(product.id);
+        brandProductIds.set(product.brand, ids);
+    });
+    const scopeProductIds = new Map();
+    metrics.forEach(metric => {
         const brand = productsById.get(metric.product_id)?.brand;
-        return brand ? `${brand}:${metric.metric_date}` : '';
-    }).filter(Boolean));
+        if (!brand) return;
+        const key = `${brand}:${metric.metric_date}`;
+        const ids = scopeProductIds.get(key) || new Set();
+        ids.add(metric.product_id);
+        scopeProductIds.set(key, ids);
+    });
     const brandMetrics = state.marketingBrandMetrics.filter(metric =>
-        scopeKeys.has(`${metric.brand}:${metric.metric_date}`)
+        scopeProductIds.has(`${metric.brand}:${metric.metric_date}`)
     );
     if (brandMetrics.length) {
-        const coveredKeys = new Set(brandMetrics.map(metric => `${metric.brand}:${metric.metric_date}`));
+        const coveredKeys = new Set(brandMetrics.flatMap(metric => {
+            const key = `${metric.brand}:${metric.metric_date}`;
+            const selectedIds = scopeProductIds.get(key) || new Set();
+            const expectedIds = brandProductIds.get(metric.brand) || new Set();
+            const coversWholeBrand = expectedIds.size > 0 &&
+                [...expectedIds].every(productId => selectedIds.has(productId));
+            return coversWholeBrand ? [key] : [];
+        }));
         const coveredLegacySpend = metrics.reduce((sum, metric) => {
             const brand = productsById.get(metric.product_id)?.brand;
             return coveredKeys.has(`${brand}:${metric.metric_date}`)
@@ -869,8 +970,29 @@ function aggregateMarketingMetrics(metrics) {
                 : sum;
         }, 0);
         total.ad_spend = total.ad_spend - coveredLegacySpend +
-            brandMetrics.reduce((sum, metric) => sum + metricNumber(metric.naver_ad_spend), 0);
+            brandMetrics.reduce((sum, metric) =>
+                coveredKeys.has(`${metric.brand}:${metric.metric_date}`)
+                    ? sum + metricNumber(metric.naver_ad_spend)
+                    : sum
+            , 0);
+        metrics.forEach(metric => {
+            const brand = productsById.get(metric.product_id)?.brand;
+            if (
+                coveredKeys.has(`${brand}:${metric.metric_date}`) &&
+                !hasCollectedMetric(metric, 'ad_spend')
+            ) {
+                total.adSpendRecordsMeasured++;
+            }
+        });
     }
+    total.exposureComplete = total.exposureRecordsExpected > 0 &&
+        total.exposureRecordsMeasured === total.exposureRecordsExpected;
+    total.salesComplete = total.salesRecordsExpected > 0 &&
+        total.salesRecordsMeasured === total.salesRecordsExpected;
+    total.revenueComplete = total.revenueRecordsExpected > 0 &&
+        total.revenueRecordsMeasured === total.revenueRecordsExpected;
+    total.adSpendComplete = total.adSpendRecordsExpected > 0 &&
+        total.adSpendRecordsMeasured === total.adSpendRecordsExpected;
     return total;
 }
 
@@ -891,9 +1013,10 @@ function getAverageDailySearchVolume(metrics) {
 
 function getKeywordSearchOverview(metrics = [], selectedIds = getSelectedProductIds()) {
     const latestByKeyword = new Map();
+    const combineSharedBrandKeywords = selectedIds.size > 1;
     const add = (item, dateKey, valueKey) => {
         if (!selectedIds.has(item.product_id) || !item.keyword || item.keyword === '기존 합계') return;
-        const key = `${item.product_id}:${item.keyword}`;
+        const key = combineSharedBrandKeywords ? item.keyword : `${item.product_id}:${item.keyword}`;
         const current = latestByKeyword.get(key);
         if (!current || item[dateKey] > current.date) {
             latestByKeyword.set(key, {
@@ -956,12 +1079,13 @@ function getMetricsInDateRange(from, to) {
 
 function calculateSearchMomentum() {
     const selectedIds = getSelectedProductIds();
+    const combineSharedBrandKeywords = selectedIds.size > 1;
     const grouped = new Map();
     [...state.dailyKeywordMetrics.map(item => ({ ...item, date: item.metric_date })),
      ...state.marketingSearchSnapshots.map(item => ({ ...item, date: item.snapshot_date }))]
         .filter(item => selectedIds.has(item.product_id) && item.keyword && item.keyword !== '기존 합계')
         .forEach(item => {
-            const key = `${item.product_id}:${item.keyword}`;
+            const key = combineSharedBrandKeywords ? item.keyword : `${item.product_id}:${item.keyword}`;
             if (!grouped.has(key)) grouped.set(key, []);
             grouped.get(key).push(item);
         });
@@ -999,9 +1123,13 @@ function calculateMarketingHealth(metrics) {
     const monthlyMetrics = getMetricsInDateRange(localDateString(monthStart), referenceDate);
     const monthlyTotal = aggregateMarketingMetrics(monthlyMetrics);
     const expectedViews = metricNumber(target.content_views_target) * (reference.getDate() / monthEnd.getDate());
-    const trafficRate = total.content_views > 0 && total.channelPairsMeasured > 0 ? percent(total.visits, total.content_views) : null;
+    const trafficRate = total.exposureComplete && total.content_views > 0 && total.channelPairsMeasured > 0
+        ? percent(total.visits, total.content_views)
+        : null;
     const conversionRate = total.visits > 0 ? percent(total.attributableOrders, total.visits) : null;
-    const exposureIndex = expectedViews > 0 ? (monthlyTotal.content_views / expectedViews) * 100 : null;
+    const exposureIndex = expectedViews > 0 && monthlyTotal.exposureComplete
+        ? (monthlyTotal.content_views / expectedViews) * 100
+        : null;
     const trafficIndex = trafficRate === null ? null : (trafficRate / metricNumber(target.traffic_rate_target)) * 100;
     const conversionIndex = conversionRate === null ? null : (conversionRate / metricNumber(target.conversion_rate_target)) * 100;
     const availableIndices = [exposureIndex, trafficIndex, conversionIndex].filter(value => value !== null && Number.isFinite(value));
@@ -1104,9 +1232,9 @@ function renderProductMetricCard(product) {
         <div class="metric-product-summary">
             <span><small>검색 키워드</small><strong>${keywordValues.length ? `${escapeHtml(keywordValues[0].keyword)} ${formatMetric(keywordValues[0].value)}` : '—'}</strong></span>
             <span><small>유입</small><strong>${latestTotal.channelPairsMeasured ? formatMetric(latestTotal.visits) : '—'}</strong></span>
-            <span><small>판매</small><strong>${formatMetric(getMetricSales(latest))}</strong></span>
+            <span><small>판매</small><strong>${isSalesComplete(latest) ? formatMetric(getMetricSales(latest)) : '—'}</strong></span>
         </div>
-        <p>${formatDate(latest.metric_date)} · ${formatWon(getMetricRevenue(latest))}</p>` : `
+        <p>${formatDate(latest.metric_date)} · ${isRevenueComplete(latest) ? formatWon(getMetricRevenue(latest)) : '매출 미수집'}</p>` : `
         <div class="metric-product-empty"><i class="ri-database-2-line"></i> 첫 기록을 기다리고 있습니다</div>`}
         <span class="sr-only">${escapeHtml(title)} 선택</span>
     </button>`;
@@ -1129,16 +1257,19 @@ function renderMarketingDailyTable(metrics) {
             <tbody>
             ${rows.map(([date, dayMetrics]) => {
                 const day = aggregateMarketingMetrics(dayMetrics);
+                const exposureComplete = dayMetrics.every(isExposureComplete);
+                const salesComplete = dayMetrics.every(isSalesComplete);
+                const revenueComplete = dayMetrics.every(isRevenueComplete);
                 return `<tr>
                     <td><strong>${formatDate(date)}</strong></td>
-                    <td>${formatMetric(day.blog_views)}</td>
-                    <td>${formatMetric(day.cafe_views)}</td>
-                    <td>${formatMetric(day.content_views)}</td>
+                    <td>${areMetricsCollected(dayMetrics, 'blog_views') ? formatMetric(day.blog_views) : '—'}</td>
+                    <td>${areMetricsCollected(dayMetrics, 'cafe_views') ? formatMetric(day.cafe_views) : '—'}</td>
+                    <td>${exposureComplete ? formatMetric(day.content_views) : '—'}</td>
                     <td>${renderDailyKeywordValues(date)}</td>
                     <td>${day.channelPairsMeasured ? formatMetric(day.visits) : '—'}</td>
-                    <td>${formatMetric(day.orders)}</td>
-                    <td>${formatWon(day.revenue)}</td>
-                    <td>${formatWon(day.ad_spend)}</td>
+                    <td>${salesComplete ? formatMetric(day.orders) : '—'}</td>
+                    <td>${revenueComplete ? formatWon(day.revenue) : '—'}</td>
+                    <td>${day.adSpendComplete ? formatWon(day.ad_spend) : '—'}</td>
                     <td>${day.visits > 0 ? `${percent(day.attributableOrders, day.visits).toFixed(1)}%` : '—'}</td>
                 </tr>`;
             }).join('')}
@@ -1237,7 +1368,7 @@ function getReportProduct() {
 }
 
 function reportMetricValue(metric, key, formatter = formatMetric) {
-    if (!metric) return '<span class="report-no-data">—</span>';
+    if (!metric || !hasCollectedMetric(metric, key)) return '<span class="report-no-data">—</span>';
     return formatter(metricNumber(metric[key]));
 }
 
@@ -1293,19 +1424,14 @@ function renderDailyReportTable(product) {
         const month = date.slice(0, 7);
         return aggregateMarketingMetrics(productMetrics.filter(metric => metric.metric_date.startsWith(month) && metric.metric_date <= date));
     };
-    const brandAdSpendByDate = new Map(
-        state.marketingBrandMetrics
-            .filter(metric => metric.brand === product.brand)
-            .map(metric => [metric.metric_date, metricNumber(metric.naver_ad_spend)])
-    );
-    const dailyAdSpend = (metric, date) => brandAdSpendByDate.has(date)
-        ? brandAdSpendByDate.get(date)
-        : nullableMetricNumber(metric?.ad_spend);
+    const dailyAdSpend = metric => hasCollectedMetric(metric, 'ad_spend')
+        ? nullableMetricNumber(metric?.ad_spend)
+        : null;
     const won = value => formatWon(value);
 
     return `
     <div class="excel-report-scroll">
-        <table class="excel-report-table product-theme-${product.sort_order || 1}" style="min-width:${230 + (dates.length * 150)}px">
+        <table class="excel-report-table product-theme-${product.sort_order || 1}" style="min-width:${280 + (dates.length * 175)}px">
             <thead>
                 <tr>
                     <th class="report-product-cell">
@@ -1330,13 +1456,14 @@ function renderDailyReportTable(product) {
                     },
                     { indent: true }
                 )).join('')}
-                ${renderReportRow(`${product.name} 블로그 방문자 수(조회수)`, dates, metricsByDate, metric => metric && nullableMetricNumber(metric.blog_views) !== null ? formatMetric(metric.blog_views) : '<span class="report-no-data">—</span>')}
-                ${renderReportRow('카페 글 조회수', dates, metricsByDate, metric => metric ? formatMetric(metricNumber(metric.cafe_views)) : '<span class="report-no-data">—</span>')}
-                ${renderReportRow('노출 합계', dates, metricsByDate, metric => metric ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
+                ${renderReportRow(`${product.name} 블로그 방문자 수(조회수)`, dates, metricsByDate, metric => reportMetricValue(metric, 'blog_views'))}
+                ${renderReportRow('카페 글 조회수', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe_views'))}
+                ${renderReportRow('노출 합계', dates, metricsByDate, metric => isExposureComplete(metric) ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[1]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[1]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('스마트스토어 구매전환율', dates, metricsByDate, metric => metric && hasCollectedMetric(metric, 'smartstore_conversion_rate') ? `${metricNumber(metric.smartstore_conversion_rate).toFixed(1)}%` : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('쿠팡', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
                 ${renderReportRow('측정 유입 합계', dates, metricsByDate, metric => {
                     if (!metric) return '<span class="report-no-data">—</span>';
@@ -1347,20 +1474,27 @@ function renderDailyReportTable(product) {
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-shopping-bag-3-line"></i> 판매량</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe24_orders'), { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => reportMetricValue(metric, 'smartstore_orders'), { indent: true })}
-                ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_wing_orders) !== null ? formatMetric(metric.coupang_wing_orders) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('로켓그로스', dates, metricsByDate, metric => metric && nullableMetricNumber(metric.coupang_growth_orders) !== null ? formatMetric(metric.coupang_growth_orders) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('판매량 총합', dates, metricsByDate, metric => metric ? formatMetric(getMetricSales(metric)) : '<span class="report-no-data">—</span>', { total: true })}
+                ${renderReportRow('쿠팡 윙', dates, metricsByDate, metric => reportMetricValue(metric, 'coupang_wing_orders'), { indent: true })}
+                ${renderReportRow('로켓그로스', dates, metricsByDate, metric => reportMetricValue(metric, 'coupang_growth_orders'), { indent: true })}
+                ${renderReportRow('판매량 총합', dates, metricsByDate, metric => isSalesComplete(metric) ? formatMetric(getMetricSales(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-money-dollar-circle-line"></i> 매출</th></tr>
-                ${renderReportRow('일 매출', dates, metricsByDate, metric => metric ? won(getMetricRevenue(metric)) : '<span class="report-no-data">—</span>')}
-                ${renderReportRow('월 누적 매출', dates, metricsByDate, (metric, date) => metric ? won(monthAggregate(date).revenue) : '<span class="report-no-data">—</span>', { total: true })}
+                ${renderReportRow('일 매출', dates, metricsByDate, metric => isRevenueComplete(metric) ? won(getMetricRevenue(metric)) : '<span class="report-no-data">—</span>')}
+                ${renderReportRow('월 누적 매출', dates, metricsByDate, (metric, date) => {
+                    if (!metric) return '<span class="report-no-data">—</span>';
+                    const monthMetrics = productMetrics.filter(item => item.metric_date.startsWith(date.slice(0, 7)) && item.metric_date <= date);
+                    return monthMetrics.every(isRevenueComplete) ? won(monthAggregate(date).revenue) : '<span class="report-no-data">—</span>';
+                }, { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-megaphone-line"></i> 마케팅 광고비</th></tr>
-                ${renderReportRow(`${product.brand} 일 광고비`, dates, metricsByDate, (metric, date) => {
-                    const value = dailyAdSpend(metric, date);
+                ${renderReportRow(`${product.name} 일 광고비`, dates, metricsByDate, metric => {
+                    const value = dailyAdSpend(metric);
                     return value === null ? '<span class="report-no-data">—</span>' : won(value);
                 })}
-                ${renderReportRow(`${product.brand} 월 누적 광고비`, dates, metricsByDate, (_metric, date) => won(monthAggregate(date).ad_spend), { total: true })}
+                ${renderReportRow(`${product.name} 월 누적 광고비`, dates, metricsByDate, (_metric, date) => {
+                    const monthly = monthAggregate(date);
+                    return monthly.adSpendComplete ? won(monthly.ad_spend) : '<span class="report-no-data">—</span>';
+                }, { total: true })}
 
             </tbody>
         </table>
@@ -1371,6 +1505,7 @@ function renderInternalReportView() {
     const product = getReportProduct();
     if (!product) return `${renderNavbar()}<main class="internal-dashboard"><div class="marketing-empty-row">제품 정보를 불러오는 중입니다.</div></main>`;
     const keywords = PRODUCT_KEYWORDS[product.slug] || [product.name];
+    const expectedDate = kstDateString(-1);
 
     return `
     ${renderNavbar()}
@@ -1392,6 +1527,8 @@ function renderInternalReportView() {
             <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
             <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
+
+        ${renderGrokBridgeStatus(expectedDate)}
 
         <section class="report-controls">
             <div class="report-product-tabs">
@@ -1424,43 +1561,153 @@ function renderInternalDashboardView() {
     return renderFunnelDashboardView();
 }
 
+function getGrokBridgeStatus(metricDate) {
+    const client = state.marketingBridgeClients.find(item => item.client_key === 'grok-marketing-ops') || null;
+    const jobs = state.marketingBridgeJobs.filter(job => job.metric_date === metricDate);
+    const metricsByProduct = new Map(
+        state.marketingMetrics
+            .filter(metric => metric.metric_date === metricDate)
+            .map(metric => [metric.product_id, metric])
+    );
+    const missingProducts = state.marketingProducts.filter(product => {
+        const metric = metricsByProduct.get(product.id);
+        return !metric ||
+            !hasCollectedMetric(metric, 'smartstore_visits') ||
+            !hasCollectedMetric(metric, 'smartstore_pay_count') ||
+            !hasCollectedMetric(metric, 'smartstore_conversion_rate') ||
+            !hasCollectedMetric(metric, 'smartstore_orders') ||
+            !hasCollectedMetric(metric, 'smartstore_revenue') ||
+            !hasCollectedCoupangMetric(metric, 'visits') ||
+            !hasCollectedCoupangMetric(metric, 'orders') ||
+            !hasCollectedCoupangMetric(metric, 'revenue');
+    });
+    const needsLogin = jobs.find(job => job.status === 'needs_login');
+    const failed = jobs.find(job => job.status === 'failed');
+    const working = jobs.filter(job => ['pending', 'claimed'].includes(job.status));
+    const issue = needsLogin || failed || null;
+    const providerLabel = provider => provider === 'coupang' ? '쿠팡' : '스마트스토어';
+    const accountLabel = account => account === 'innerium' ? '이너리움' : account === 'yural' ? '유랄' : account;
+    const lastSeenAt = client?.last_seen_at ? new Date(client.last_seen_at) : null;
+    const stale = lastSeenAt && Date.now() - lastSeenAt.getTime() > 26 * 60 * 60 * 1000;
+    const clientRunbookVersion = Number(client?.details?.runbook_version) || null;
+    const runbookOutdated = clientRunbookVersion !== null && clientRunbookVersion !== GROK_RUNBOOK_VERSION;
+    const lastSeenLabel = lastSeenAt && !Number.isNaN(lastSeenAt.getTime())
+        ? lastSeenAt.toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '연결 전';
+
+    if (issue) {
+        const loginRequired = issue.status === 'needs_login';
+        return {
+            state: 'error',
+            title: loginRequired
+                ? `${accountLabel(issue.account)} ${providerLabel(issue.provider)} 재로그인 필요`
+                : `${accountLabel(issue.account)} ${providerLabel(issue.provider)} 복구 실패`,
+            detail: issue.last_error || 'Grok Bot 작업 이력을 확인하세요.',
+            lastSeenLabel,
+            issue,
+        };
+    }
+    if (working.length) {
+        return {
+            state: 'waiting',
+            title: `Grok Bot 복구 작업 ${working.length}건 대기`,
+            detail: working.map(job => `${accountLabel(job.account)} ${providerLabel(job.provider)}`).join(' · '),
+            lastSeenLabel,
+            issue: null,
+        };
+    }
+    if (!client?.last_seen_at) {
+        return {
+            state: 'setup',
+            title: 'Grok Bot Bridge 연결 대기',
+            detail: 'Secure Secret 연결 후 첫 상태 확인을 실행하세요.',
+            lastSeenLabel,
+            issue: null,
+        };
+    }
+    if (missingProducts.length) {
+        return {
+            state: 'waiting',
+            title: 'Grok Bot 로그인 채널 수집 대기',
+            detail: `${missingProducts.length}개 제품의 스마트스토어·쿠팡 확정값을 기다리고 있습니다.`,
+            lastSeenLabel,
+            issue: null,
+        };
+    }
+    if (runbookOutdated) {
+        return {
+            state: 'waiting',
+            title: 'Grok Bot 운영지침 업데이트 대기',
+            detail: `현재 v${clientRunbookVersion} · 필요한 버전 v${GROK_RUNBOOK_VERSION}`,
+            lastSeenLabel,
+            issue: null,
+        };
+    }
+    if (stale) {
+        return {
+            state: 'waiting',
+            title: 'Grok Bot 확인 필요',
+            detail: '마지막 Bridge 접속 후 26시간이 지났습니다.',
+            lastSeenLabel,
+            issue: null,
+        };
+    }
+    return {
+        state: 'success',
+        title: 'Grok Bot Bridge 정상',
+        detail: '전일 스마트스토어·쿠팡 데이터가 모두 확인되었습니다.',
+        lastSeenLabel,
+        issue: null,
+    };
+}
+
+function renderGrokBridgeStatus(metricDate) {
+    const bridge = getGrokBridgeStatus(metricDate);
+    const icon = bridge.state === 'error'
+        ? 'ri-error-warning-line'
+        : bridge.state === 'success'
+            ? 'ri-robot-2-line'
+            : 'ri-loader-4-line';
+    return `
+        <section class="grok-bridge-status ${bridge.state}">
+            <div class="grok-bridge-main">
+                <i class="${icon}"></i>
+                <span><strong>${escapeHtml(bridge.title)}</strong><small>${escapeHtml(bridge.detail)}</small></span>
+            </div>
+            <span class="grok-bridge-seen">마지막 접속 ${escapeHtml(bridge.lastSeenLabel)}</span>
+        </section>`;
+}
+
 function renderFunnelDashboardView() {
     const metrics = getVisibleMarketingMetrics();
     const health = calculateMarketingHealth(metrics);
     const { total } = health;
-    const roas = percent(total.revenue, total.ad_spend);
+    const roas = total.revenueComplete && total.adSpendComplete && total.ad_spend > 0
+        ? percent(total.revenue, total.ad_spend)
+        : null;
     const brands = [...new Set(state.marketingProducts.map(product => product.brand))];
     const expectedDate = kstDateString(-1);
     const expectedBatch = state.marketingBatches.find(batch => batch.metric_date === expectedDate);
-    const latestLocalRuns = new Map();
-    state.marketingRuns
-        .filter(run => run.metric_date === expectedDate && ['smartstore', 'coupang'].includes(run.provider))
-        .forEach(run => {
-            const key = run.provider === 'coupang'
-                ? `coupang:${run.details?.account || 'unknown'}`
-                : run.provider;
-            if (!latestLocalRuns.has(key)) latestLocalRuns.set(key, run);
-        });
-    const failedLocalRun = [...latestLocalRuns.values()].find(run => run.status === 'failed');
-    const allLocalRunsSucceeded = ['smartstore', 'coupang:innerium', 'coupang:yural']
-        .every(key => latestLocalRuns.get(key)?.status === 'success');
     const batchAgeMinutes = expectedBatch ? (Date.now() - new Date(expectedBatch.started_at).getTime()) / 60000 : 0;
     let runStatus = expectedBatch?.status === 'running' && batchAgeMinutes > 30
         ? 'failed'
         : (expectedBatch?.status || 'skipped');
-    if (failedLocalRun) runStatus = expectedBatch?.status === 'success' ? 'partial' : 'failed';
-    else if (expectedBatch?.status === 'success' && !allLocalRunsSucceeded) runStatus = 'partial';
-    const runLabel = failedLocalRun
-        ? `${failedLocalRun.provider === 'coupang' ? '쿠팡' : '스마트스토어'} 자동수집 실패`
+    const bridgeStatus = getGrokBridgeStatus(expectedDate);
+    if (bridgeStatus.state === 'error') runStatus = 'failed';
+    else if (bridgeStatus.state === 'waiting' && runStatus === 'success') runStatus = 'running';
+    const runLabel = bridgeStatus.state === 'error'
+        ? bridgeStatus.title
+        : bridgeStatus.state === 'waiting'
+        ? bridgeStatus.title
         : ({
-        success: '09시 자동수집 완료',
-        partial: '일부 채널 수집',
+        success: '서버 API·Grok 자동수집 완료',
+        partial: '서버 API 일부 누락',
         failed: '자동수집 실패',
         running: '자동수집 중',
         skipped: '자동수집 설정 대기',
     }[runStatus] || '수집 상태 확인');
-    const runError = failedLocalRun?.error_message ||
-        failedLocalRun?.details?.errors?.[0] ||
+    const runError = bridgeStatus.issue?.last_error ||
+        expectedBatch?.details?.provider_results?.find(result => result.status !== 'success')?.error ||
         '';
 
     return `
@@ -1487,6 +1734,8 @@ function renderFunnelDashboardView() {
             <button class="active" onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
             <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
+
+        ${renderGrokBridgeStatus(expectedDate)}
 
         <section class="marketing-toolbar">
             <div class="marketing-product-filter">
@@ -1520,13 +1769,13 @@ function renderFunnelDashboardView() {
                 ${renderIndexCard('전환지수', health.conversionIndex, `현재 ${health.conversionRate === null ? '측정 불가' : `${health.conversionRate.toFixed(1)}%`}`, 'ri-shopping-cart-line')}
             </div>
             <div class="funnel-flow">
-                <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${formatMetric(total.content_views)}</strong><small>블로그 ${formatMetric(total.blog_views)} + 카페 ${formatMetric(total.cafe_views)}</small></div>
+                <div class="funnel-step"><i class="ri-eye-line"></i><span>콘텐츠 노출</span><strong>${total.exposureComplete ? formatMetric(total.content_views) : '—'}</strong><small>${total.exposureComplete ? `블로그 ${formatMetric(total.blog_views)} + 카페 ${formatMetric(total.cafe_views)}` : '노출 데이터 미수집'}</small></div>
                 <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${health.trafficRate === null ? '—' : `${health.trafficRate.toFixed(1)}%`}</b></div>
                 <div class="funnel-step search"><i class="ri-links-line"></i><span>측정 가능 유입</span><strong>${total.channelPairsMeasured ? formatMetric(total.visits) : '—'}</strong><small>${[...total.measuredChannels].join('·') || '채널 연결 필요'}</small></div>
                 <div class="funnel-rate"><i class="ri-arrow-right-line"></i><b>${health.conversionRate === null ? '—' : `${health.conversionRate.toFixed(1)}%`}</b></div>
-                <div class="funnel-step visit"><i class="ri-shopping-bag-3-line"></i><span>전체 구매</span><strong>${formatMetric(total.orders)}건</strong><small>자사몰·스마트스토어·쿠팡</small></div>
+                <div class="funnel-step visit"><i class="ri-shopping-bag-3-line"></i><span>전체 구매</span><strong>${total.salesComplete ? `${formatMetric(total.orders)}건` : '—'}</strong><small>자사몰·스마트스토어·쿠팡</small></div>
                 <div class="funnel-rate reference"><i class="ri-more-line"></i><b>참고</b></div>
-                <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>전체 매출</span><strong>${formatWon(total.revenue)}</strong><small>3개 판매채널 합계</small></div>
+                <div class="funnel-step sales"><i class="ri-money-dollar-circle-line"></i><span>전체 매출</span><strong>${total.revenueComplete ? formatWon(total.revenue) : '—'}</strong><small>3개 판매채널 합계</small></div>
             </div>
             <p class="funnel-disclaimer"><i class="ri-information-line"></i> 총판매량은 전 채널을 합산합니다. 전환율은 방문자와 구매가 모두 확보된 동일 채널만 사용하며 현재 데이터 완성도는 ${health.dataCoverage.toFixed(0)}%입니다.</p>
         </section>
@@ -1534,9 +1783,9 @@ function renderFunnelDashboardView() {
         <section class="marketing-kpis">
             <div class="marketing-kpi keyword-kpi"><span>브랜드 검색량 · 키워드별</span>${renderKeywordSearchOverview(metrics)}<small>직전 수집 대비 최저 변화 ${health.searchMomentum === null ? '비교 불가' : `${health.searchMomentum >= 0 ? '+' : ''}${health.searchMomentum.toFixed(1)}%`}</small></div>
             <div class="marketing-kpi"><span>측정 가능 유입</span><strong>${total.channelPairsMeasured ? formatMetric(total.visits) : '—'}</strong><small>방문자가 확보된 채널 합계</small></div>
-            <div class="marketing-kpi"><span>총 매출</span><strong>${formatWon(total.revenue)}</strong><small>카페24·쿠팡·스마트스토어</small></div>
-            <div class="marketing-kpi"><span>광고비</span><strong>${formatWon(total.ad_spend)}</strong><small>선택 기간 합계</small></div>
-            <div class="marketing-kpi"><span>ROAS</span><strong>${roas.toFixed(0)}%</strong><small>매출 ÷ 광고비</small></div>
+            <div class="marketing-kpi"><span>총 매출</span><strong>${total.revenueComplete ? formatWon(total.revenue) : '—'}</strong><small>카페24·쿠팡·스마트스토어</small></div>
+            <div class="marketing-kpi"><span>광고비</span><strong>${total.adSpendComplete ? formatWon(total.ad_spend) : '—'}</strong><small>선택 기간 합계</small></div>
+            <div class="marketing-kpi"><span>ROAS</span><strong>${roas === null ? '—' : `${roas.toFixed(0)}%`}</strong><small>매출 ÷ 광고비</small></div>
             <div class="marketing-kpi accent"><span>구매 전환율</span><strong>${health.conversionRate === null ? '—' : `${health.conversionRate.toFixed(1)}%`}</strong><small>측정 채널 목표 10%</small></div>
         </section>
 
@@ -1608,13 +1857,16 @@ function getOkrTarget(periodType, periodStart) {
 }
 
 function renderOkrMetric(label, actual, target, formatter = formatMetric) {
+    const measured = actual !== null;
     const hasTarget = target > 0;
-    const rate = hasTarget ? percent(actual, target) : null;
+    const rate = measured && hasTarget ? percent(actual, target) : null;
     return `
     <div class="okr-metric">
         <span>${label}</span>
-        <strong>${formatter(actual)}</strong>
-        <small>${hasTarget ? `목표 ${formatter(target)} · ${rate.toFixed(1)}%` : '목표 설정 필요'}</small>
+        <strong>${measured ? formatter(actual) : '—'}</strong>
+        <small>${!measured
+            ? hasTarget ? `목표 ${formatter(target)} · 실적 미수집` : '데이터 미수집'
+            : hasTarget ? `목표 ${formatter(target)} · ${rate.toFixed(1)}%` : '목표 설정 필요'}</small>
         <div class="okr-progress"><i style="width:${Math.min(rate || 0, 100)}%"></i></div>
     </div>`;
 }
@@ -1627,8 +1879,9 @@ function renderOkrPeriodCard(periodType) {
     const target = getOkrTarget(periodType, period.start);
     const elapsedDays = Math.max(1, Math.ceil((referenceDate - period.start) / 86400000) + 1);
     const totalDays = Math.ceil((period.end - period.start) / 86400000) + 1;
-    const forecastViews = Math.round((total.content_views / elapsedDays) * totalDays);
-    const remainingViews = Math.max(0, target.content_views_target - total.content_views);
+    const measuredViews = total.exposureComplete ? total.content_views : null;
+    const forecastViews = measuredViews === null ? null : Math.round((measuredViews / elapsedDays) * totalDays);
+    const remainingViews = measuredViews === null ? null : Math.max(0, target.content_views_target - measuredViews);
     const remainingDays = Math.max(1, totalDays - elapsedDays);
 
     return `
@@ -1638,14 +1891,14 @@ function renderOkrPeriodCard(periodType) {
             <i class="ri-flag-line"></i>
         </div>
         <div class="okr-grid">
-            ${renderOkrMetric('콘텐츠 노출', total.content_views, target.content_views_target)}
-            ${renderOkrMetric('판매량', total.orders, target.orders_target)}
-            ${renderOkrMetric('매출', total.revenue, target.revenue_target, formatWon)}
-            ${renderOkrMetric('광고비', total.ad_spend, target.ad_spend_budget, formatWon)}
+            ${renderOkrMetric('콘텐츠 노출', measuredViews, target.content_views_target)}
+            ${renderOkrMetric('판매량', total.salesComplete ? total.orders : null, target.orders_target)}
+            ${renderOkrMetric('매출', total.revenueComplete ? total.revenue : null, target.revenue_target, formatWon)}
+            ${renderOkrMetric('광고비', total.adSpendComplete ? total.ad_spend : null, target.ad_spend_budget, formatWon)}
         </div>
         <div class="okr-forecast">
-            <span><b>${formatMetric(forecastViews)}</b> 현재 속도 예상 노출</span>
-            <span><b>${formatMetric(Math.ceil(remainingViews / remainingDays))}</b> 목표 달성에 필요한 일평균 노출</span>
+            <span><b>${forecastViews === null ? '—' : formatMetric(forecastViews)}</b> 현재 속도 예상 노출</span>
+            <span><b>${remainingViews === null ? '—' : formatMetric(Math.ceil(remainingViews / remainingDays))}</b> 목표 달성에 필요한 일평균 노출</span>
         </div>
     </section>`;
 }
