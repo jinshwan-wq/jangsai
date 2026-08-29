@@ -10,6 +10,7 @@ import {
   extractNaverAdTitle,
   PRODUCT_AD_TITLE_RULES,
 } from "./naver-ad-spend.mjs";
+import { parseNaverKeywordVolumes } from "./naver-keywords.mjs";
 
 type Mapping = {
   id: string;
@@ -266,28 +267,9 @@ async function collectNaverSearch(mapping: Mapping): Promise<CollectionResult> {
       }`,
     );
   }
-  const wanted = new Set(
-    configuredKeywords.map((keyword) =>
-      keyword.replace(/\s+/g, "").toLowerCase()
-    ),
-  );
-  const volumes = (payload.keywordList || []).flatMap(
-    (item: Record<string, unknown>) => {
-      const keyword = String(item.relKeyword || "").replace(/\s+/g, "")
-        .toLowerCase();
-      if (!wanted.has(keyword)) return [];
-      const pc = typeof item.monthlyPcQcCnt === "number"
-        ? item.monthlyPcQcCnt
-        : 0;
-      const mobile = typeof item.monthlyMobileQcCnt === "number"
-        ? item.monthlyMobileQcCnt
-        : 0;
-      const originalKeyword =
-        configuredKeywords.find((value) =>
-          value.replace(/\s+/g, "").toLowerCase() === keyword
-        ) || String(item.relKeyword);
-      return [{ keyword: originalKeyword, search_volume: pc + mobile }];
-    },
+  const volumes = parseNaverKeywordVolumes(
+    configuredKeywords,
+    payload.keywordList,
   );
   return {
     keywordSnapshots: volumes,
@@ -1266,25 +1248,26 @@ Deno.serve(async (request) => {
             }));
           } else {
             const patch = collection.metrics || {};
-            ({ error } = await supabase.rpc("merge_daily_marketing_metric", {
-              p_product_id: mapping.product_id,
-              p_metric_date: metricDate,
-              p_patch: patch,
-              p_source: "api",
-              p_source_details: { [provider]: sourceDetails },
-              p_collection_status: "partial",
-            }));
-            if (
-              !error &&
-              Object.keys(patch).some((key) =>
+            const hasCoupangSplit = Object.keys(patch).some((key) =>
                 key.startsWith("coupang_wing_") ||
                 key.startsWith("coupang_growth_")
-              )
-            ) {
-              ({ error } = await supabase.rpc("merge_daily_coupang_metrics", {
+              );
+            if (hasCoupangSplit) {
+              ({ error } = await supabase.rpc("merge_daily_coupang_snapshot", {
                 p_product_id: mapping.product_id,
                 p_metric_date: metricDate,
                 p_patch: patch,
+                p_source: "api",
+                p_source_details: sourceDetails,
+              }));
+            } else {
+              ({ error } = await supabase.rpc("merge_daily_marketing_metric", {
+                p_product_id: mapping.product_id,
+                p_metric_date: metricDate,
+                p_patch: patch,
+                p_source: "api",
+                p_source_details: { [provider]: sourceDetails },
+                p_collection_status: "partial",
               }));
             }
           }

@@ -741,14 +741,19 @@ function formatWon(value) {
     return `${new Intl.NumberFormat('ko-KR').format(Math.round(metricNumber(value)))}원`;
 }
 
+function hasCompleteCoupangSplit(metric, suffix) {
+    const wingKey = `coupang_wing_${suffix}`;
+    const growthKey = `coupang_growth_${suffix}`;
+    return nullableMetricNumber(metric?.[wingKey]) !== null &&
+        nullableMetricNumber(metric?.[growthKey]) !== null &&
+        hasCollectedMetric(metric, wingKey) &&
+        hasCollectedMetric(metric, growthKey);
+}
+
 function getCoupangMetric(metric, suffix) {
     const wingKey = `coupang_wing_${suffix}`;
     const growthKey = `coupang_growth_${suffix}`;
-    const hasSplitData = nullableMetricNumber(metric?.[wingKey]) !== null ||
-        nullableMetricNumber(metric?.[growthKey]) !== null ||
-        metric?.data_completeness?.[wingKey] === true ||
-        metric?.data_completeness?.[growthKey] === true;
-    return hasSplitData
+    return hasCompleteCoupangSplit(metric, suffix)
         ? metricNumber(metric?.[wingKey]) + metricNumber(metric?.[growthKey])
         : metricNumber(metric?.[`coupang_${suffix}`]);
 }
@@ -791,15 +796,8 @@ function hasCollectedMetric(metric, key) {
 }
 
 function hasCollectedCoupangMetric(metric, suffix) {
-    const wingKey = `coupang_wing_${suffix}`;
-    const growthKey = `coupang_growth_${suffix}`;
-    const usesSplit = nullableMetricNumber(metric?.[wingKey]) !== null ||
-        nullableMetricNumber(metric?.[growthKey]) !== null ||
-        metric?.data_completeness?.[wingKey] === true ||
-        metric?.data_completeness?.[growthKey] === true;
-    return usesSplit
-        ? hasCollectedMetric(metric, wingKey) && hasCollectedMetric(metric, growthKey)
-        : hasCollectedMetric(metric, `coupang_${suffix}`);
+    return hasCompleteCoupangSplit(metric, suffix) ||
+        hasCollectedMetric(metric, `coupang_${suffix}`);
 }
 
 function isSalesComplete(metric) {
@@ -888,7 +886,11 @@ function getPeriodBounds(period) {
     return { from: localDateString(from), to: localDateString(to) };
 }
 
-function aggregateMarketingMetrics(metrics) {
+function isBrandAdSpendComplete(metric) {
+    return metric?.source_details?.naver_ad_spend?.allocation_complete !== false;
+}
+
+function aggregateMarketingMetrics(metrics, expectedProductIds = null) {
     const total = metrics.reduce((total, metric) => {
         total.blog_views += metricNumber(metric.blog_views);
         total.cafe_views += metricNumber(metric.cafe_views);
@@ -935,6 +937,17 @@ function aggregateMarketingMetrics(metrics) {
         measuredChannels: new Set(), missingChannels: new Set(),
         failedRecords: 0, partialRecords: 0,
     });
+    if (expectedProductIds instanceof Set && expectedProductIds.size) {
+        const dates = new Set(metrics.map(metric => metric.metric_date).filter(Boolean));
+        const observedRows = new Set(metrics.map(metric => `${metric.metric_date}:${metric.product_id}`));
+        const expectedRows = dates.size * expectedProductIds.size;
+        const missingRows = Math.max(0, expectedRows - observedRows.size);
+        total.exposureRecordsExpected += missingRows;
+        total.salesRecordsExpected += missingRows;
+        total.revenueRecordsExpected += missingRows;
+        total.adSpendRecordsExpected += missingRows;
+        total.channelPairsExpected += missingRows * MARKETING_CHANNELS.length;
+    }
     const productsById = new Map(state.marketingProducts.map(product => [product.id, product]));
     const brandProductIds = new Map();
     state.marketingProducts.forEach(product => {
@@ -952,7 +965,8 @@ function aggregateMarketingMetrics(metrics) {
         scopeProductIds.set(key, ids);
     });
     const brandMetrics = state.marketingBrandMetrics.filter(metric =>
-        scopeProductIds.has(`${metric.brand}:${metric.metric_date}`)
+        scopeProductIds.has(`${metric.brand}:${metric.metric_date}`) &&
+        isBrandAdSpendComplete(metric)
     );
     if (brandMetrics.length) {
         const coveredKeys = new Set(brandMetrics.flatMap(metric => {
@@ -1080,15 +1094,19 @@ function getMetricsInDateRange(from, to) {
 function calculateSearchMomentum() {
     const selectedIds = getSelectedProductIds();
     const combineSharedBrandKeywords = selectedIds.size > 1;
+    const byKeywordDate = new Map();
     const grouped = new Map();
-    [...state.dailyKeywordMetrics.map(item => ({ ...item, date: item.metric_date })),
-     ...state.marketingSearchSnapshots.map(item => ({ ...item, date: item.snapshot_date }))]
-        .filter(item => selectedIds.has(item.product_id) && item.keyword && item.keyword !== '기존 합계')
-        .forEach(item => {
-            const key = combineSharedBrandKeywords ? item.keyword : `${item.product_id}:${item.keyword}`;
-            if (!grouped.has(key)) grouped.set(key, []);
-            grouped.get(key).push(item);
-        });
+    const add = (item, date) => {
+        if (!selectedIds.has(item.product_id) || !item.keyword || item.keyword === '기존 합계') return;
+        const groupKey = combineSharedBrandKeywords ? item.keyword : `${item.product_id}:${item.keyword}`;
+        byKeywordDate.set(`${groupKey}:${date}`, { ...item, date, groupKey });
+    };
+    state.marketingSearchSnapshots.forEach(item => add(item, item.snapshot_date));
+    state.dailyKeywordMetrics.forEach(item => add(item, item.metric_date));
+    byKeywordDate.forEach(item => {
+        if (!grouped.has(item.groupKey)) grouped.set(item.groupKey, []);
+        grouped.get(item.groupKey).push(item);
+    });
     const changes = [...grouped.values()].map(items => {
         const sorted = items.sort((a, b) => a.date.localeCompare(b.date));
         if (sorted.length < 2) return null;
@@ -1114,14 +1132,15 @@ function calculateSearchMomentum() {
 }
 
 function calculateMarketingHealth(metrics) {
-    const total = aggregateMarketingMetrics(metrics);
+    const selectedProductIds = getSelectedProductIds();
+    const total = aggregateMarketingMetrics(metrics, selectedProductIds);
     const referenceDate = kstDateString(-1);
     const reference = new Date(`${referenceDate}T00:00:00`);
     const target = getMonthTarget(referenceDate);
     const monthStart = new Date(reference.getFullYear(), reference.getMonth(), 1);
     const monthEnd = new Date(reference.getFullYear(), reference.getMonth() + 1, 0);
     const monthlyMetrics = getMetricsInDateRange(localDateString(monthStart), referenceDate);
-    const monthlyTotal = aggregateMarketingMetrics(monthlyMetrics);
+    const monthlyTotal = aggregateMarketingMetrics(monthlyMetrics, selectedProductIds);
     const expectedViews = metricNumber(target.content_views_target) * (reference.getDate() / monthEnd.getDate());
     const trafficRate = total.exposureComplete && total.content_views > 0 && total.channelPairsMeasured > 0
         ? percent(total.visits, total.content_views)
@@ -1256,19 +1275,17 @@ function renderMarketingDailyTable(metrics) {
             <thead><tr><th>날짜</th><th>블로그</th><th>카페</th><th>노출 합계</th><th>키워드별 검색</th><th>측정 유입</th><th>전체 판매</th><th>매출</th><th>광고비</th><th>측정 전환율</th></tr></thead>
             <tbody>
             ${rows.map(([date, dayMetrics]) => {
-                const day = aggregateMarketingMetrics(dayMetrics);
-                const exposureComplete = dayMetrics.every(isExposureComplete);
-                const salesComplete = dayMetrics.every(isSalesComplete);
-                const revenueComplete = dayMetrics.every(isRevenueComplete);
+                const expectedProductIds = getSelectedProductIds();
+                const day = aggregateMarketingMetrics(dayMetrics, expectedProductIds);
                 return `<tr>
                     <td><strong>${formatDate(date)}</strong></td>
-                    <td>${areMetricsCollected(dayMetrics, 'blog_views') ? formatMetric(day.blog_views) : '—'}</td>
-                    <td>${areMetricsCollected(dayMetrics, 'cafe_views') ? formatMetric(day.cafe_views) : '—'}</td>
-                    <td>${exposureComplete ? formatMetric(day.content_views) : '—'}</td>
+                    <td>${dayMetrics.length === expectedProductIds.size && areMetricsCollected(dayMetrics, 'blog_views') ? formatMetric(day.blog_views) : '—'}</td>
+                    <td>${dayMetrics.length === expectedProductIds.size && areMetricsCollected(dayMetrics, 'cafe_views') ? formatMetric(day.cafe_views) : '—'}</td>
+                    <td>${day.exposureComplete ? formatMetric(day.content_views) : '—'}</td>
                     <td>${renderDailyKeywordValues(date)}</td>
                     <td>${day.channelPairsMeasured ? formatMetric(day.visits) : '—'}</td>
-                    <td>${salesComplete ? formatMetric(day.orders) : '—'}</td>
-                    <td>${revenueComplete ? formatWon(day.revenue) : '—'}</td>
+                    <td>${day.salesComplete ? formatMetric(day.orders) : '—'}</td>
+                    <td>${day.revenueComplete ? formatWon(day.revenue) : '—'}</td>
                     <td>${day.adSpendComplete ? formatWon(day.ad_spend) : '—'}</td>
                     <td>${day.visits > 0 ? `${percent(day.attributableOrders, day.visits).toFixed(1)}%` : '—'}</td>
                 </tr>`;
@@ -1280,9 +1297,20 @@ function renderMarketingDailyTable(metrics) {
 
 function renderDailyKeywordValues(date) {
     const selectedIds = getSelectedProductIds();
-    const values = state.dailyKeywordMetrics.filter(item =>
-        selectedIds.has(item.product_id) && item.metric_date === date
-    );
+    const combineSharedBrandKeywords = selectedIds.size > 1;
+    const valuesByKeyword = new Map();
+    const add = item => {
+        if (!selectedIds.has(item.product_id) || !item.keyword || item.keyword === '기존 합계') return;
+        const key = combineSharedBrandKeywords ? item.keyword : `${item.product_id}:${item.keyword}`;
+        valuesByKeyword.set(key, item);
+    };
+    state.marketingSearchSnapshots
+        .filter(item => item.snapshot_date === date)
+        .forEach(add);
+    state.dailyKeywordMetrics
+        .filter(item => item.metric_date === date)
+        .forEach(add);
+    const values = [...valuesByKeyword.values()];
     if (!values.length) return '<span class="report-no-data">—</span>';
     return `<div class="daily-keyword-values">${values.map(item =>
         `<span>${escapeHtml(item.keyword)} <b>${formatMetric(item.search_volume)}</b></span>`
@@ -1590,7 +1618,12 @@ function getGrokBridgeStatus(metricDate) {
     const lastSeenAt = client?.last_seen_at ? new Date(client.last_seen_at) : null;
     const stale = lastSeenAt && Date.now() - lastSeenAt.getTime() > 26 * 60 * 60 * 1000;
     const clientRunbookVersion = Number(client?.details?.runbook_version) || null;
-    const runbookOutdated = clientRunbookVersion !== null && clientRunbookVersion !== GROK_RUNBOOK_VERSION;
+    const runbookOutdated = Boolean(client?.last_seen_at) &&
+        clientRunbookVersion !== GROK_RUNBOOK_VERSION;
+    const clientNeedsLogin = client?.status === 'needs_login' ||
+        Object.values(client?.details?.sessions || {}).includes('needs_login');
+    const clientFailed = client?.status === 'error' ||
+        client?.details?.last_verification?.status === 'fail';
     const lastSeenLabel = lastSeenAt && !Number.isNaN(lastSeenAt.getTime())
         ? lastSeenAt.toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
         : '연결 전';
@@ -1605,6 +1638,15 @@ function getGrokBridgeStatus(metricDate) {
             detail: issue.last_error || 'Grok Bot 작업 이력을 확인하세요.',
             lastSeenLabel,
             issue,
+        };
+    }
+    if (clientNeedsLogin || clientFailed) {
+        return {
+            state: 'error',
+            title: clientNeedsLogin ? 'Grok Bot Bridge 재로그인 필요' : 'Grok Bot 검증 실패',
+            detail: client?.last_error || 'Grok Bot 세션 또는 최근 검증 결과를 확인하세요.',
+            lastSeenLabel,
+            issue: client,
         };
     }
     if (working.length) {
@@ -2146,23 +2188,42 @@ function parseGoogleSheetMetrics(payload) {
 }
 
 async function mergeDailyMarketingMetric(productId, metricDate, patch, source, sourceDetails, collectionStatus) {
-    const { error } = await sb.rpc('merge_daily_marketing_metric', {
-        p_product_id: productId,
-        p_metric_date: metricDate,
-        p_patch: patch,
-        p_source: source,
-        p_source_details: sourceDetails || {},
-        p_collection_status: collectionStatus,
-    });
-    if (error) throw error;
     const coupangPatch = Object.fromEntries(Object.entries(patch).filter(([key]) =>
         key.startsWith('coupang_wing_') || key.startsWith('coupang_growth_')
     ));
-    if (Object.keys(coupangPatch).length) {
-        const { error: coupangError } = await sb.rpc('merge_daily_coupang_metrics', {
+    const hasCoupangSplit = Object.keys(coupangPatch).length > 0;
+    if (hasCoupangSplit && Object.keys(coupangPatch).length !== 6) {
+        throw new Error('쿠팡 윙·로켓그로스 방문·판매·매출 6개 값이 모두 필요합니다.');
+    }
+    const regularPatch = Object.fromEntries(Object.entries(patch).filter(([key]) =>
+        !key.startsWith('coupang_wing_') &&
+        !key.startsWith('coupang_growth_') &&
+        !(hasCoupangSplit && ['coupang_visits', 'coupang_orders', 'coupang_revenue'].includes(key))
+    ));
+    if (regularPatch.data_completeness && hasCoupangSplit) {
+        regularPatch.data_completeness = Object.fromEntries(
+            Object.entries(regularPatch.data_completeness).filter(([key]) => !key.startsWith('coupang_'))
+        );
+    }
+    if (Object.keys(regularPatch).some(key => key !== 'data_completeness') ||
+        Object.keys(regularPatch.data_completeness || {}).length) {
+        const { error } = await sb.rpc('merge_daily_marketing_metric', {
+            p_product_id: productId,
+            p_metric_date: metricDate,
+            p_patch: regularPatch,
+            p_source: source,
+            p_source_details: sourceDetails || {},
+            p_collection_status: collectionStatus,
+        });
+        if (error) throw error;
+    }
+    if (hasCoupangSplit) {
+        const { error: coupangError } = await sb.rpc('merge_daily_coupang_snapshot', {
             p_product_id: productId,
             p_metric_date: metricDate,
             p_patch: coupangPatch,
+            p_source: source,
+            p_source_details: sourceDetails?.coupang || sourceDetails || {},
         });
         if (coupangError) throw coupangError;
     }

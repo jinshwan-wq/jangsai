@@ -12,6 +12,11 @@ type CoupangMetric = {
   growth: ChannelMetric;
 };
 
+const ACCOUNT_PRODUCTS = Object.freeze({
+  innerium: Object.freeze(['innerium-gala431', 'innerium-minti431']),
+  yural: Object.freeze(['yural-myeongga-bonhwan', 'yural-tonggam-cream']),
+});
+
 function validDate(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -63,8 +68,16 @@ Deno.serve(async request => {
   const metrics = Array.isArray(body.metrics) ? body.metrics : [];
   const isFailureReport = body.status === 'failed';
   const failureMessage = typeof body.error === 'string' ? body.error.trim().slice(0, 500) : '';
-  if (!validDate(body.metric_date) || typeof body.account !== 'string' ||
-    (isFailureReport ? !failureMessage : (!metrics.length || metrics.length > 10 || !metrics.every(validMetric)))) {
+  const expectedProducts = ACCOUNT_PRODUCTS[body.account as keyof typeof ACCOUNT_PRODUCTS];
+  const submittedProducts = [...new Set(metrics.map((metric: CoupangMetric) => metric.product_slug))].sort();
+  if (!validDate(body.metric_date) || !expectedProducts ||
+    (isFailureReport
+      ? !failureMessage
+      : (
+        metrics.length !== expectedProducts.length ||
+        !metrics.every(validMetric) ||
+        submittedProducts.join(',') !== [...expectedProducts].sort().join(',')
+      ))) {
     return Response.json({ error: '수집 데이터 형식이 올바르지 않습니다.' }, { status: 400 });
   }
 
@@ -148,25 +161,10 @@ Deno.serve(async request => {
       coupang_growth_orders: metric.growth.orders,
       coupang_growth_revenue: metric.growth.revenue,
     };
-    const { error: metricError } = await supabase.rpc('merge_daily_marketing_metric', {
+    const { error: metricError } = await supabase.rpc('merge_daily_coupang_snapshot', {
       p_product_id: productIds.get(metric.product_slug),
       p_metric_date: body.metric_date,
-      p_patch: {
-        coupang_visits: metric.wing.visits + metric.growth.visits,
-        coupang_orders: metric.wing.orders + metric.growth.orders,
-        coupang_revenue: metric.wing.revenue + metric.growth.revenue,
-        data_completeness: {
-          coupang_wing_visits: true,
-          coupang_wing_orders: true,
-          coupang_wing_revenue: true,
-          coupang_growth_visits: true,
-          coupang_growth_orders: true,
-          coupang_growth_revenue: true,
-          coupang_visits: true,
-          coupang_orders: true,
-          coupang_revenue: true,
-        },
-      },
+      p_patch: splitPatch,
       p_source: 'api',
       p_source_details: {
         provider: 'coupang',
@@ -174,19 +172,12 @@ Deno.serve(async request => {
         account: body.account,
         collected_at: new Date().toISOString(),
       },
-      p_collection_status: 'partial',
     });
     if (metricError) {
       errors.push(`${metric.product_slug}: ${metricError.message}`);
       continue;
     }
-    const { error: splitError } = await supabase.rpc('merge_daily_coupang_metrics', {
-      p_product_id: productIds.get(metric.product_slug),
-      p_metric_date: body.metric_date,
-      p_patch: splitPatch,
-    });
-    if (splitError) errors.push(`${metric.product_slug}: ${splitError.message}`);
-    else succeeded++;
+    succeeded++;
   }
 
   const failed = metrics.length - succeeded;

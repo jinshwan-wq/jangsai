@@ -68,6 +68,22 @@ assert.equal(splitCoupang.sales, 10, '쿠팡 윙과 로켓그로스를 분리 �
 assert.equal(splitCoupang.revenue, 10000, '분리된 쿠팡 매출을 합산한다');
 assert.equal(
     vm.runInContext(`getMetricRevenue({
+        cafe24_revenue: 0,
+        smartstore_revenue: 0,
+        coupang_wing_revenue: -700,
+        coupang_growth_revenue: 200,
+        data_completeness: {
+            cafe24_revenue: true,
+            smartstore_revenue: true,
+            coupang_wing_revenue: true,
+            coupang_growth_revenue: true
+        }
+    })`, context),
+    -500,
+    '쿠팡 반품으로 발생한 음수 매출을 0으로 자르지 않는다'
+);
+assert.equal(
+    vm.runInContext(`getMetricRevenue({
         cafe24_revenue: 1000,
         smartstore_revenue: 2000,
         coupang_wing_revenue: 3000,
@@ -120,6 +136,20 @@ const explicitlyIncompleteAdSpend = vm.runInContext(`aggregateMarketingMetrics([
     data_completeness: { ad_spend: false }
 }])`, context);
 assert.equal(explicitlyIncompleteAdSpend.adSpendComplete, false, '양수 광고비라도 명시적 미완성 상태를 완료로 오인하지 않는다');
+const missingProductCoverage = vm.runInContext(`aggregateMarketingMetrics([{
+    product_id: 'gala',
+    metric_date: '2026-08-27',
+    cafe24_orders: 1,
+    smartstore_orders: 1,
+    coupang_orders: 1,
+    data_completeness: {
+        cafe24_orders: true,
+        smartstore_orders: true,
+        coupang_orders: true
+    }
+}], new Set(['gala', 'minti']))`, context);
+assert.equal(missingProductCoverage.salesComplete, false, '제품 행 자체가 빠지면 전체 판매량을 완성으로 표시하지 않는다');
+assert.equal(missingProductCoverage.channelPairsExpected, 6, '누락된 제품의 채널도 완성도 분모에 포함한다');
 
 const smartstoreAnalytics = vm.runInContext(`aggregateMarketingMetrics([{
     blog_views: 10, cafe_views: 0, cafe24_visits: null, cafe24_orders: 0,
@@ -147,6 +177,30 @@ const brandAdSpend = vm.runInContext(`(() => {
     ]).ad_spend;
 })()`, context);
 assert.equal(brandAdSpend, 500, '브랜드 광고비를 제품 수만큼 중복 합산하지 않는다');
+const partialBrandAdSpend = vm.runInContext(`(() => {
+    state.marketingProducts = [
+        { id: 'gala', brand: '이너리움' },
+        { id: 'minti', brand: '이너리움' }
+    ];
+    state.marketingBrandMetrics = [{
+        brand: '이너리움',
+        metric_date: '2026-08-27',
+        naver_ad_spend: 500,
+        source_details: { naver_ad_spend: { allocation_complete: false } }
+    }];
+    return aggregateMarketingMetrics([
+        {
+            product_id: 'gala', metric_date: '2026-08-27', ad_spend: 100,
+            data_completeness: { ad_spend: false }
+        },
+        {
+            product_id: 'minti', metric_date: '2026-08-27', ad_spend: 200,
+            data_completeness: { ad_spend: false }
+        }
+    ]);
+})()`, context);
+assert.equal(partialBrandAdSpend.ad_spend, 300, '미분류 광고비가 있으면 제품별 확인된 금액만 보존한다');
+assert.equal(partialBrandAdSpend.adSpendComplete, false, '부분 광고비를 브랜드 확정 총액으로 오인하지 않는다');
 
 const sharedBrandKeywordCount = vm.runInContext(`(() => {
     state.dailyKeywordMetrics = [
@@ -157,6 +211,23 @@ const sharedBrandKeywordCount = vm.runInContext(`(() => {
     return getKeywordSearchOverview([], new Set(['gala', 'minti'])).length;
 })()`, context);
 assert.equal(sharedBrandKeywordCount, 1, '여러 제품을 볼 때 동일 브랜드 검색어를 중복 표시하지 않는다');
+assert.equal(
+    vm.runInContext(`(() => {
+        state.selectedMarketingProduct = 'gala';
+        state.marketingProducts = [{ id: 'gala', brand: '이너리움' }];
+        state.marketingSearchSnapshots = [
+            { product_id: 'gala', keyword: '이너리움', snapshot_date: '2026-08-27', search_volume: 100 },
+            { product_id: 'gala', keyword: '이너리움', snapshot_date: '2026-08-28', search_volume: 999 }
+        ];
+        state.dailyKeywordMetrics = [
+            { product_id: 'gala', keyword: '이너리움', metric_date: '2026-08-28', search_volume: 200 }
+        ];
+        return calculateSearchMomentum();
+    })()`, context),
+    100,
+    '같은 날짜의 스냅샷과 일 지표를 두 시점으로 중복 계산하지 않는다'
+);
+vm.runInContext(`state.selectedMarketingProduct = 'all'`, context);
 
 assert.equal(vm.runInContext('getIndexStatus(79.9)', context), 'danger');
 assert.equal(vm.runInContext('getIndexStatus(80)', context), 'stable');
@@ -344,6 +415,18 @@ assert.match(
 );
 assert.match(
     vm.runInContext(`(() => {
+        state.marketingBridgeClients[0].details.runbook_version = 6;
+        state.marketingBridgeClients[0].status = 'error';
+        state.marketingBridgeClients[0].last_error = '검증 불일치';
+        return renderFunnelDashboardView();
+    })()`, context),
+    /Grok Bot 검증 실패/,
+    '작업값이 있어도 Grok 클라이언트 오류 상태를 정상으로 표시하지 않는다'
+);
+assert.match(
+    vm.runInContext(`(() => {
+        state.marketingBridgeClients[0].status = 'ready';
+        state.marketingBridgeClients[0].last_error = null;
         state.marketingBridgeJobs = [];
         state.marketingMetrics = [];
         return renderFunnelDashboardView();
