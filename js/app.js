@@ -10,6 +10,7 @@ const EMAIL_DOMAIN = '@jangsai.local';
 const OWNER_EMAIL = 'kher2000@jangsai.local';
 const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbw_kV92ocY27UZGbnSJHhmYDlRK6gzqJDU76HV2VJAvybtmmRihz1vDthCGlvLvAC0/exec';
 const GROK_RUNBOOK_VERSION = 6;
+const MARKETING_AUTO_REFRESH_MS = 60 * 1000;
 
 // --- 등급별 색상 ---
 const ROLE_COLORS = {
@@ -91,7 +92,10 @@ const state = {
     marketingView: 'report',
     reportPeriod: '3d',
     marketingDataReady: true,
+    marketingLastRefreshedAt: null,
 };
+let marketingRefreshTimer = null;
+let marketingRefreshInFlight = false;
 
 // ==========================================
 // 유틸리티 함수
@@ -332,6 +336,36 @@ async function loadMarketingData() {
     state.marketingBridgeJobs = bridgeJobError ? [] : (bridgeJobs || []);
     state.marketingBridgeClients = bridgeClientError ? [] : (bridgeClients || []);
     state.marketingDataReady = true;
+    state.marketingLastRefreshedAt = new Date().toISOString();
+}
+
+async function refreshMarketingDashboard() {
+    if (
+        marketingRefreshInFlight ||
+        document.hidden ||
+        state.currentView !== 'dashboard' ||
+        !isInternalUser()
+    ) return;
+    marketingRefreshInFlight = true;
+    try {
+        await loadMarketingData();
+        if (state.currentView === 'dashboard') renderApp();
+    } catch (error) {
+        console.warn('마케팅 대시보드 자동 갱신 실패:', error);
+    } finally {
+        marketingRefreshInFlight = false;
+    }
+}
+
+function startMarketingAutoRefresh() {
+    if (marketingRefreshTimer) clearInterval(marketingRefreshTimer);
+    marketingRefreshTimer = setInterval(refreshMarketingDashboard, MARKETING_AUTO_REFRESH_MS);
+}
+
+function stopMarketingAutoRefresh() {
+    if (!marketingRefreshTimer) return;
+    clearInterval(marketingRefreshTimer);
+    marketingRefreshTimer = null;
 }
 
 async function loadAdminUsers() {
@@ -1612,6 +1646,7 @@ function getGrokBridgeStatus(metricDate) {
     const needsLogin = jobs.find(job => job.status === 'needs_login');
     const failed = jobs.find(job => job.status === 'failed');
     const working = jobs.filter(job => ['pending', 'claimed'].includes(job.status));
+    const overdue = working.find(job => isGrokJobOverdue(job));
     const issue = needsLogin || failed || null;
     const providerLabel = provider => provider === 'coupang' ? '쿠팡' : '스마트스토어';
     const accountLabel = account => account === 'innerium' ? '이너리움' : account === 'yural' ? '유랄' : account;
@@ -1649,11 +1684,22 @@ function getGrokBridgeStatus(metricDate) {
             issue: client,
         };
     }
+    if (overdue) {
+        return {
+            state: 'error',
+            title: `${accountLabel(overdue.account)} ${providerLabel(overdue.provider)} 예약 수집 미실행`,
+            detail: '예약 시간 후 30분이 지났지만 Grok Bot이 작업을 완료하지 못했습니다.',
+            lastSeenLabel,
+            issue: overdue,
+        };
+    }
     if (working.length) {
         return {
             state: 'waiting',
             title: `Grok Bot 복구 작업 ${working.length}건 대기`,
-            detail: working.map(job => `${accountLabel(job.account)} ${providerLabel(job.provider)}`).join(' · '),
+            detail: `${working.map(job => `${accountLabel(job.account)} ${providerLabel(job.provider)}`).join(' · ')}${
+                runbookOutdated ? ` · 운영지침 v${GROK_RUNBOOK_VERSION} 업데이트 필요` : ''
+            }`,
             lastSeenLabel,
             issue: null,
         };
@@ -1701,6 +1747,17 @@ function getGrokBridgeStatus(metricDate) {
         lastSeenLabel,
         issue: null,
     };
+}
+
+function isGrokJobOverdue(job, now = new Date()) {
+    if (!job?.metric_date || !['pending', 'claimed'].includes(job.status)) return false;
+    const [hour, minute] = job.provider === 'coupang' ? [12, 40] : [9, 50];
+    const nextDay = new Date(`${job.metric_date}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const deadline = new Date(
+        `${nextDay.toISOString().slice(0, 10)}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+09:00`
+    ).getTime() + 30 * 60 * 1000;
+    return now.getTime() > deadline;
 }
 
 function renderGrokBridgeStatus(metricDate) {
@@ -3363,11 +3420,16 @@ async function handleDeleteProgram(programId) {
 
 async function navigate(view) {
     state.currentView = view;
+    if (view !== 'dashboard') stopMarketingAutoRefresh();
 
     if (view === 'dashboard') {
         await loadRoles();
-        if (isInternalUser()) await loadMarketingData();
-        else await loadPrograms();
+        if (isInternalUser()) {
+            await loadMarketingData();
+            startMarketingAutoRefresh();
+        } else {
+            await loadPrograms();
+        }
     } else if (view === 'programs') {
         if (!isInternalUser()) {
             navigate('dashboard');
@@ -3492,6 +3554,10 @@ async function init() {
         navigate('auth');
     }
 }
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshMarketingDashboard();
+});
 
 // 앱 시작
 if (document.readyState === 'loading') {

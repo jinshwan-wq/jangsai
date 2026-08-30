@@ -321,6 +321,22 @@ const bridgeFailureHtml = vm.runInContext(`(() => {
 })()`, context);
 assert.match(bridgeFailureHtml, /유랄 스마트스토어 재로그인 필요/);
 assert.match(bridgeFailureHtml, /로그인 만료/);
+assert.equal(
+    vm.runInContext(`isGrokJobOverdue(
+        { metric_date: '2026-08-29', provider: 'smartstore', status: 'pending' },
+        new Date('2026-08-30T01:21:00Z')
+    )`, context),
+    true,
+    '스마트스토어 예약시간 30분 후에도 대기 중이면 미실행으로 판정한다'
+);
+assert.equal(
+    vm.runInContext(`isGrokJobOverdue(
+        { metric_date: '2026-08-29', provider: 'coupang', status: 'pending' },
+        new Date('2026-08-30T04:09:00Z')
+    )`, context),
+    false,
+    '쿠팡 공식 데이터 확정 전에는 지연으로 오인하지 않는다'
+);
 const reportTableHtml = vm.runInContext('renderDailyReportTable(state.marketingProducts[0])', context);
 assert.match(reportTableHtml, /테스트상품 블로그 방문자 수\(조회수\)/);
 assert.match(reportTableHtml, /스마트스토어 구매전환율[\s\S]*5\.3%/);
