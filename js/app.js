@@ -1812,6 +1812,7 @@ function renderDailyReportTable(product) {
                     const visits = getCafe24StoreVisits(product, date);
                     return visits === null ? '<span class="report-no-data">—</span>' : formatMetric(visits);
                 }, { indent: true })}
+                ${renderReportRow('자사몰 상품상세 조회수 (PV)', dates, metricsByDate, metric => reportMetricValue(metric, 'cafe24_product_views'), { indent: true })}
                 ${renderReportRow('자사몰 전환율', dates, metricsByDate, metric => {
                     const conversion = getChannelConversionMeasurement(metric, 'cafe24');
                     return conversion?.rate === null || conversion?.rate === undefined ? '<span class="report-no-data">—</span>' : `${conversion.rate.toFixed(1)}%`;
@@ -1976,14 +1977,14 @@ function renderMarketingComparisonMatrix(metricDate) {
                     <tr class="comparison-groups">
                         <th rowspan="2">브랜드·제품</th>
                         <th colspan="2">검색·콘텐츠</th>
-                        <th colspan="3">채널 유입</th>
+                        <th colspan="4">채널 유입</th>
                         <th colspan="4">판매량</th>
                         <th colspan="3">채널 전환율</th>
                         <th colspan="3">성과</th>
                     </tr>
                     <tr>
                         <th>메인 검색량</th><th>블로그</th>
-                        <th>자사몰</th><th>스마트스토어</th><th>쿠팡</th>
+                        <th>자사몰 전체 방문</th><th>상품상세 조회(PV)</th><th>스마트스토어</th><th>쿠팡</th>
                         <th>자사몰</th><th>스스</th><th>Wing</th><th>로켓그로스</th>
                         <th>자사몰</th><th>스스</th><th>쿠팡</th>
                         <th>총매출</th><th>광고비</th><th>ROAS</th>
@@ -2016,6 +2017,7 @@ function renderMarketingComparisonMatrix(metricDate) {
                                 rowspan: brandProducts.length,
                                 className: 'brand-shared-cell',
                             }) : ''}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'cafe24_product_views'), completeMetricValue(previous, 'cafe24_product_views'))}
                             ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[1]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[1]) : null)}
                             ${renderOverviewMetricCell(completeCoupangValue(current, 'visits'), completeCoupangValue(previous, 'visits'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'cafe24_orders'), completeMetricValue(previous, 'cafe24_orders'))}

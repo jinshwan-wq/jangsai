@@ -450,6 +450,7 @@ assert.match(overviewHtml, /Grok 자동수집/);
 assert.match(overviewHtml, /채널별 구매 전환율/);
 assert.match(overviewHtml, /4개 제품 통합 비교/);
 assert.match(overviewHtml, /자사몰[\s\S]*스마트스토어[\s\S]*쿠팡/);
+assert.match(overviewHtml, /자사몰 전체 방문[\s\S]*상품상세 조회\(PV\)/);
 const expectedMetricDate = vm.runInContext('kstDateString(-1)', context);
 const bridgeFailureHtml = vm.runInContext(`(() => {
     state.marketingBridgeClients = [{

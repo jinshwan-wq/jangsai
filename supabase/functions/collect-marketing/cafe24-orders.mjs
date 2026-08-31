@@ -20,6 +20,46 @@ function itemRevenue(item) {
   return Math.max(0, unitPrice * quantity - discounts);
 }
 
+function itemAllocationWeight(item) {
+  const quantity = Math.max(0, numberValue(item?.quantity) || 0);
+  const unitPrice = (numberValue(item?.product_price) || 0) +
+    (numberValue(item?.option_price) || 0);
+  const itemDiscounts = [
+    item?.additional_discount_price,
+    item?.coupon_discount_price,
+    item?.app_item_discount_amount,
+    item?.market_discount_amount,
+  ].reduce((sum, value) => sum + (numberValue(value) || 0), 0);
+  return Math.max(itemRevenue(item), unitPrice * quantity - itemDiscounts, 0);
+}
+
+function merchandiseNaverTender(order, activeItems) {
+  const naverTender = Math.max(
+    0,
+    (numberValue(order?.naver_point) || 0) +
+      (numberValue(order?.naver_cash) || 0),
+  );
+  if (!naverTender) return 0;
+  const amount = order?.actual_order_amount || order?.initial_order_amount || {};
+  const orderPrice = numberValue(amount?.order_price_amount);
+  const sellerDiscountsAndPoints = [
+    amount?.coupon_discount_price,
+    amount?.membership_discount_amount,
+    amount?.set_product_discount_amount,
+    amount?.app_discount_amount,
+    amount?.market_other_discount_amount,
+    amount?.points_spent_amount,
+    amount?.credits_spent_amount,
+  ].reduce((sum, value) => sum + (numberValue(value) || 0), 0);
+  const merchandiseDue = orderPrice !== null
+    ? Math.max(0, orderPrice - sellerDiscountsAndPoints)
+    : activeItems.reduce(
+      (sum, { allocationWeight }) => sum + allocationWeight,
+      0,
+    );
+  return Math.min(naverTender, merchandiseDue);
+}
+
 function allocateIntegerByWeight(amount, weights) {
   const roundedAmount = Math.max(0, Math.round(numberValue(amount) || 0));
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
@@ -45,22 +85,23 @@ export function summarizeCafe24Order(order, trackedProductNos) {
     .map((item) => ({
       item,
       baseRevenue: itemRevenue(item),
+      allocationWeight: itemAllocationWeight(item),
     }));
-  const pointAllocations = allocateIntegerByWeight(
-    order?.naver_point,
-    activeItems.map(({ baseRevenue }) => baseRevenue),
+  const tenderAllocations = allocateIntegerByWeight(
+    merchandiseNaverTender(order, activeItems),
+    activeItems.map(({ allocationWeight }) => allocationWeight),
   );
 
   return activeItems.reduce((summary, entry, index) => {
     if (!tracked.has(String(entry.item?.product_no))) return summary;
-    const naverPoint = pointAllocations[index] || 0;
+    const naverTender = tenderAllocations[index] || 0;
     summary.salesQuantity += Math.max(0, numberValue(entry.item?.quantity) || 0);
-    summary.revenue += entry.baseRevenue + naverPoint;
-    summary.naverPointIncluded += naverPoint;
+    summary.revenue += entry.baseRevenue + naverTender;
+    summary.naverTenderIncluded += naverTender;
     return summary;
   }, {
     salesQuantity: 0,
     revenue: 0,
-    naverPointIncluded: 0,
+    naverTenderIncluded: 0,
   });
 }
