@@ -23,6 +23,7 @@ const SNAPSHOT_FIELDS = [
   "cafe_views",
   "content_views",
   "cafe24_visits",
+  "cafe24_product_views",
   "cafe24_purchase_count",
   "cafe24_conversion_rate",
   "cafe24_orders",
@@ -49,6 +50,7 @@ const SNAPSHOT_FIELDS = [
 const NON_BROWSER_FIELDS = [
   "blog_views",
   "cafe24_visits",
+  "cafe24_product_views",
   "cafe24_purchase_count",
   "cafe24_conversion_rate",
   "cafe24_orders",

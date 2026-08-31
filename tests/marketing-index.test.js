@@ -149,7 +149,32 @@ const missingProductCoverage = vm.runInContext(`aggregateMarketingMetrics([{
     }
 }], new Set(['gala', 'minti']))`, context);
 assert.equal(missingProductCoverage.salesComplete, false, '제품 행 자체가 빠지면 전체 판매량을 완성으로 표시하지 않는다');
-assert.equal(missingProductCoverage.channelPairsExpected, 6, '누락된 제품의 채널도 완성도 분모에 포함한다');
+assert.equal(
+    missingProductCoverage.channelPairsExpected,
+    5,
+    '자사몰 방문자는 브랜드 공통 한 건으로 보고 누락 제품의 개별 채널만 완성도 분모에 포함한다'
+);
+const deduplicatedStoreVisitors = vm.runInContext(`(() => {
+    state.marketingProducts = [
+        { id: 'gala', brand: '이너리움', slug: 'innerium-gala431' },
+        { id: 'minti', brand: '이너리움', slug: 'innerium-minti431' }
+    ];
+    state.marketingBrandMetrics = [{
+        brand: '이너리움',
+        metric_date: '2026-08-30',
+        cafe24_visits: 215
+    }];
+    return aggregateMarketingMetrics([
+        { product_id: 'gala', metric_date: '2026-08-30', cafe24_visits: 215, data_completeness: { cafe24_visits: true } },
+        { product_id: 'minti', metric_date: '2026-08-30', cafe24_visits: 215, data_completeness: { cafe24_visits: true } }
+    ]);
+})()`, context);
+assert.equal(deduplicatedStoreVisitors.visits, 215, '같은 몰 방문자 215명을 제품별로 중복 합산하지 않는다');
+assert.match(
+    vm.runInContext(`renderMarketingComparisonMatrix('2026-08-30')`, context),
+    /rowspan="2" class="brand-shared-cell"[\s\S]*215[\s\S]*이너리움 몰 전체/,
+    '통합 현황은 같은 몰 방문자수를 브랜드 공통 셀 하나로 표시한다'
+);
 
 const smartstoreAnalytics = vm.runInContext(`aggregateMarketingMetrics([{
     blog_views: 10, cafe_views: 0, cafe24_visits: null, cafe24_orders: 0,
@@ -178,12 +203,12 @@ assert.equal(
 );
 assert.deepEqual(
     JSON.parse(JSON.stringify(vm.runInContext(`getChannelConversionMeasurement({
-        cafe24_visits: 100,
+        cafe24_product_views: 100,
         cafe24_purchase_count: 4,
         cafe24_conversion_rate: 4,
         cafe24_orders: 12,
         data_completeness: {
-            cafe24_visits: true,
+            cafe24_product_views: true,
             cafe24_purchase_count: true,
             cafe24_conversion_rate: true,
             cafe24_orders: true
@@ -220,13 +245,13 @@ const weightedConversion = vm.runInContext(`(() => {
     state.marketingMetrics = [
         {
             product_id: 'gala', metric_date: '2026-08-29',
-            cafe24_visits: 100, cafe24_orders: 10,
-            data_completeness: { cafe24_visits: true, cafe24_orders: true }
+            cafe24_product_views: 100, cafe24_orders: 10,
+            data_completeness: { cafe24_product_views: true, cafe24_orders: true }
         },
         {
             product_id: 'gala', metric_date: '2026-08-30',
-            cafe24_visits: 300, cafe24_orders: 15,
-            data_completeness: { cafe24_visits: true, cafe24_orders: true }
+            cafe24_product_views: 300, cafe24_orders: 15,
+            data_completeness: { cafe24_product_views: true, cafe24_orders: true }
         }
     ];
     return getChannelConversionSummary(new Set(['gala']), 'cafe24', '2026-08-30');
@@ -401,12 +426,12 @@ vm.runInContext(`
     state.marketingBrandMetrics = [{ brand: '테스트브랜드', metric_date: '${today}', naver_ad_spend: 4321 }];
     state.marketingMetrics = [{
         product_id: 'product-1', metric_date: '${today}',
-        blog_views: 100, cafe_views: 100, cafe24_visits: 20, cafe24_orders: 2,
+        blog_views: 100, cafe_views: 100, cafe24_visits: 20, cafe24_product_views: 20, cafe24_orders: 2,
         smartstore_visits: 38, smartstore_orders: 3, smartstore_pay_count: 2, smartstore_conversion_rate: 5.3,
         coupang_visits: null, coupang_orders: 0,
         cafe24_revenue: 10000, smartstore_revenue: 0, coupang_revenue: 0,
         keyword_search_volume: 50, site_visits: 0, tracked_visits: 0, tracked_orders: 0, ad_spend: 1000,
-        data_completeness: { cafe24_visits: true, cafe24_orders: true, smartstore_visits: true, smartstore_pay_count: true, smartstore_conversion_rate: true }
+        data_completeness: { cafe24_visits: true, cafe24_product_views: true, cafe24_orders: true, smartstore_visits: true, smartstore_pay_count: true, smartstore_conversion_rate: true }
     }];
     state.marketingTargets = [];
     state.marketingRuns = [];

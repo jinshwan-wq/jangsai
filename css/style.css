@@ -3031,6 +3031,11 @@ textarea.form-input {
     font-size: 0.75rem;
 }
 
+.marketing-comparison-table td.brand-shared-cell {
+    vertical-align: middle;
+    background: rgba(99, 102, 241, 0.05);
+}
+
 .overview-trend,
 .overview-cell-note {
     display: block;

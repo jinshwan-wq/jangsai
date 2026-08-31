@@ -941,11 +941,35 @@ function getChannelOrders(metric, channel) {
     return metricNumber(metric?.[conversionOrders]);
 }
 
+function getCafe24StoreVisits(product, metricDate) {
+    const metric = state.marketingBrandMetrics.find(item =>
+        item.brand === product?.brand && item.metric_date === metricDate
+    );
+    return metric?.cafe24_visits === null || metric?.cafe24_visits === undefined
+        ? null
+        : metricNumber(metric.cafe24_visits);
+}
+
 function getChannelConversionMeasurement(metric, channelId) {
     if (!metric) return null;
     const channel = MARKETING_CHANNELS.find(item => item.id === channelId);
-    if (!channel || !isChannelPairMeasured(metric, channel)) return null;
-    const visits = getChannelVisits(metric, channel);
+    if (!channel) return null;
+    const cafe24ProductViews = channelId === 'cafe24' &&
+        hasCollectedMetric(metric, 'cafe24_product_views')
+        ? metricNumber(metric.cafe24_product_views)
+        : null;
+    if (
+        channelId === 'cafe24'
+            ? cafe24ProductViews === null ||
+                !(
+                    hasCollectedMetric(metric, 'cafe24_purchase_count') ||
+                    hasCollectedMetric(metric, 'cafe24_orders')
+                )
+            : !isChannelPairMeasured(metric, channel)
+    ) return null;
+    const visits = channelId === 'cafe24'
+        ? cafe24ProductViews
+        : getChannelVisits(metric, channel);
     const cafe24Official = channelId === 'cafe24' &&
         hasCollectedMetric(metric, 'cafe24_purchase_count');
     const purchases = cafe24Official
@@ -1107,6 +1131,15 @@ function aggregateMarketingMetrics(metrics, expectedProductIds = null) {
         if (isRevenueComplete(metric)) total.revenueRecordsMeasured++;
         if (hasCollectedMetric(metric, 'ad_spend')) total.adSpendRecordsMeasured++;
         MARKETING_CHANNELS.forEach(channel => {
+            const product = state.marketingProducts.find(item => item.id === metric.product_id);
+            const hasBrandCafe24Metric = channel.id === 'cafe24' &&
+                state.marketingBrandMetrics.some(item =>
+                    item.brand === product?.brand &&
+                    item.metric_date === metric.metric_date &&
+                    item.cafe24_visits !== null &&
+                    item.cafe24_visits !== undefined
+                );
+            if (hasBrandCafe24Metric) return;
             const visits = getChannelVisits(metric, channel);
             total.channelPairsExpected++;
             if (visits !== null && isChannelPairMeasured(metric, channel)) {
@@ -1142,7 +1175,7 @@ function aggregateMarketingMetrics(metrics, expectedProductIds = null) {
         total.salesRecordsExpected += missingRows;
         total.revenueRecordsExpected += missingRows;
         total.adSpendRecordsExpected += missingRows;
-        total.channelPairsExpected += missingRows * MARKETING_CHANNELS.length;
+        total.channelPairsExpected += missingRows * (MARKETING_CHANNELS.length - 1);
     }
     const productsById = new Map(state.marketingProducts.map(product => [product.id, product]));
     const brandProductIds = new Map();
@@ -1160,6 +1193,44 @@ function aggregateMarketingMetrics(metrics, expectedProductIds = null) {
         ids.add(metric.product_id);
         scopeProductIds.set(key, ids);
     });
+    for (const [key, selectedIds] of scopeProductIds) {
+        const separator = key.lastIndexOf(':');
+        const brand = key.slice(0, separator);
+        const metricDate = key.slice(separator + 1);
+        const expectedIds = brandProductIds.get(brand) || new Set();
+        const coversWholeBrand = expectedIds.size > 0 &&
+            [...expectedIds].every(productId => selectedIds.has(productId));
+        const brandMetric = state.marketingBrandMetrics.find(metric =>
+            metric.brand === brand && metric.metric_date === metricDate
+        );
+        if (!brandMetric || !Object.prototype.hasOwnProperty.call(brandMetric, 'cafe24_visits')) {
+            continue;
+        }
+        total.channelPairsExpected++;
+        if (
+            coversWholeBrand &&
+            brandMetric?.cafe24_visits !== null &&
+            brandMetric?.cafe24_visits !== undefined
+        ) {
+            total.visits += metricNumber(brandMetric.cafe24_visits);
+            total.attributableOrders += metrics
+                .filter(metric =>
+                    metric.metric_date === metricDate &&
+                    expectedIds.has(metric.product_id)
+                )
+                .reduce((sum, metric) =>
+                    sum + (
+                        hasCollectedMetric(metric, 'cafe24_purchase_count')
+                            ? metricNumber(metric.cafe24_purchase_count)
+                            : metricNumber(metric.cafe24_orders)
+                    )
+                , 0);
+            total.channelPairsMeasured++;
+            total.measuredChannels.add('자사몰');
+        } else {
+            total.missingChannels.add('자사몰');
+        }
+    }
     const brandMetrics = state.marketingBrandMetrics.filter(metric =>
         scopeProductIds.has(`${metric.brand}:${metric.metric_date}`) &&
         isBrandAdSpendComplete(metric)
@@ -1685,7 +1756,10 @@ function renderDailyReportTable(product) {
                 ${renderReportRow('노출 합계', dates, metricsByDate, metric => isExposureComplete(metric) ? formatMetric(getMetricExposure(metric)) : '<span class="report-no-data">—</span>', { total: true })}
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
-                ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('자사몰 방문자 (몰 전체)', dates, metricsByDate, (_metric, date) => {
+                    const visits = getCafe24StoreVisits(product, date);
+                    return visits === null ? '<span class="report-no-data">—</span>' : formatMetric(visits);
+                }, { indent: true })}
                 ${renderReportRow('자사몰 전환율', dates, metricsByDate, metric => {
                     const conversion = getChannelConversionMeasurement(metric, 'cafe24');
                     return conversion?.rate === null || conversion?.rate === undefined ? '<span class="report-no-data">—</span>' : `${conversion.rate.toFixed(1)}%`;
@@ -1749,15 +1823,16 @@ function renderOverviewTrend(current, previous, options = {}) {
 }
 
 function renderOverviewMetricCell(current, previous, options = {}) {
+    const attributes = `${options.rowspan ? ` rowspan="${Number(options.rowspan)}"` : ''}${options.className ? ` class="${escapeHtml(options.className)}"` : ''}`;
     if (current === null || current === undefined || !Number.isFinite(current)) {
-        return `<td><span class="overview-no-data">—</span>${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
+        return `<td${attributes}><span class="overview-no-data">—</span>${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
     }
     const value = options.percent
         ? `${current.toFixed(1)}%`
         : options.won
             ? formatWon(current)
             : formatMetric(current);
-    return `<td><strong>${value}</strong>${renderOverviewTrend(current, previous, options)}${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
+    return `<td${attributes}><strong>${value}</strong>${renderOverviewTrend(current, previous, options)}${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
 }
 
 function completeMetricValue(metric, key) {
@@ -1874,13 +1949,21 @@ function renderMarketingComparisonMatrix(metricDate) {
                         const previousRoas = previousRevenue !== null && previousAdSpend > 0 ? percent(previousRevenue, previousAdSpend) : null;
                         const currentSearch = getOverviewMainKeywordMetric(product, metricDate);
                         const previousSearch = getOverviewMainKeywordMetric(product, previousDate);
+                        const brandProducts = state.marketingProducts.filter(item => item.brand === product.brand);
+                        const isFirstBrandProduct = brandProducts[0]?.id === product.id;
+                        const currentStoreVisits = getCafe24StoreVisits(product, metricDate);
+                        const previousStoreVisits = getCafe24StoreVisits(product, previousDate);
                         return `
                         <tr class="${index > 0 && state.marketingProducts[index - 1]?.brand !== product.brand ? 'brand-divider' : ''}"
                             onclick="openProductReport('${product.id}')">
                             <th><small>${escapeHtml(product.brand)}</small><strong>${escapeHtml(product.name)}</strong></th>
                             ${renderOverviewMetricCell(currentSearch.value, previousSearch.value, { note: currentSearch.keyword })}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'blog_views'), completeMetricValue(previous, 'blog_views'))}
-                            ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[0]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[0]) : null)}
+                            ${isFirstBrandProduct ? renderOverviewMetricCell(currentStoreVisits, previousStoreVisits, {
+                                note: `${product.brand} 몰 전체`,
+                                rowspan: brandProducts.length,
+                                className: 'brand-shared-cell',
+                            }) : ''}
                             ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[1]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[1]) : null)}
                             ${renderOverviewMetricCell(completeCoupangValue(current, 'visits'), completeCoupangValue(previous, 'visits'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'cafe24_orders'), completeMetricValue(previous, 'cafe24_orders'))}
