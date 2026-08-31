@@ -4081,7 +4081,7 @@ function renderWorklogDetail() {
 // ==========================================
 
 function renderReportView() {
-    const selectedDate = state.reportSelectedDate || kstDateString(-1);
+    const selectedDate = state.reportSelectedDate || kstDateString(0);
     const isWeekly = state.reportMode === 'weekly';
 
     let dateRange;
@@ -4137,14 +4137,12 @@ function renderReportView() {
         </div>`;
     }).join('');
 
-    const salesSnapshot = renderReportSalesSnapshot(dateRange);
-
     return `
     ${renderNavbar()}
     <div class="admin">
         <div class="admin-header">
             <h1 class="admin-title"><i class="ri-bar-chart-grouped-line"></i> 통합보고</h1>
-            <p class="admin-subtitle">전 직원 업무 현황과 매출 요약을 한눈에 확인합니다</p>
+            <p class="admin-subtitle">전 직원 업무 현황을 한눈에 확인합니다</p>
         </div>
 
         <div class="report-controls">
@@ -4164,131 +4162,9 @@ function renderReportView() {
         <div class="report-staff-list">
             ${staffSections}
         </div>
-
-        ${salesSnapshot}
     </div>`;
 }
 
-function renderReportSalesSnapshot(dateRange) {
-    if (!state.marketingMetrics || state.marketingMetrics.length === 0) {
-        return `
-        <div class="report-section-header" style="margin-top:32px">
-            <h2><i class="ri-shopping-bag-line"></i> 매출 현황</h2>
-        </div>
-        <div class="report-sales-empty">
-            <i class="ri-information-line"></i> 해당 기간의 매출 데이터가 없습니다.
-        </div>`;
-    }
-
-    const metricsInRange = state.marketingMetrics.filter(m =>
-        m.metric_date >= dateRange.from && m.metric_date <= dateRange.to
-    );
-
-    if (metricsInRange.length === 0) {
-        return `
-        <div class="report-section-header" style="margin-top:32px">
-            <h2><i class="ri-shopping-bag-line"></i> 매출 현황</h2>
-        </div>
-        <div class="report-sales-empty">
-            <i class="ri-information-line"></i> ${dateRange.label} 기간의 수집된 매출 데이터가 없습니다.
-        </div>`;
-    }
-
-    const productSummaries = {};
-    for (const metric of metricsInRange) {
-        const product = state.marketingProducts.find(p => p.id === metric.product_id);
-        const productName = product ? `${product.brand} ${product.name}` : metric.product_id;
-        if (!productSummaries[metric.product_id]) {
-            productSummaries[metric.product_id] = {
-                name: productName,
-                brand: product?.brand || '',
-                ss_orders: 0, ss_revenue: 0,
-                cp_orders: 0, cp_revenue: 0,
-                c24_orders: 0, c24_revenue: 0,
-                total_orders: 0, total_revenue: 0,
-                days: 0
-            };
-        }
-        const s = productSummaries[metric.product_id];
-        s.ss_orders  += metricNumber(metric.smartstore_orders);
-        s.ss_revenue += metricNumber(metric.smartstore_revenue);
-        s.cp_orders  += getCoupangMetric(metric, 'orders');
-        s.cp_revenue += getCoupangMetric(metric, 'revenue');
-        s.c24_orders += metricNumber(metric.cafe24_orders);
-        s.c24_revenue += metricNumber(metric.cafe24_revenue);
-        s.total_orders += getMetricSales(metric);
-        s.total_revenue += getMetricRevenue(metric);
-        s.days++;
-    }
-
-    const rows = Object.values(productSummaries).map(s => `
-        <tr>
-            <td class="report-product-cell">
-                <span class="report-brand">${escapeHtml(s.brand)}</span>
-                ${escapeHtml(s.name)}
-            </td>
-            <td class="num">${formatMetric(s.ss_orders)}</td>
-            <td class="num">${formatWon(s.ss_revenue)}</td>
-            <td class="num">${formatMetric(s.cp_orders)}</td>
-            <td class="num">${formatWon(s.cp_revenue)}</td>
-            <td class="num">${formatMetric(s.c24_orders)}</td>
-            <td class="num">${formatWon(s.c24_revenue)}</td>
-            <td class="num total">${formatMetric(s.total_orders)}</td>
-            <td class="num total">${formatWon(s.total_revenue)}</td>
-        </tr>
-    `).join('');
-
-    const grandTotals = Object.values(productSummaries).reduce((acc, s) => ({
-        ss_orders: acc.ss_orders + s.ss_orders,
-        ss_revenue: acc.ss_revenue + s.ss_revenue,
-        cp_orders: acc.cp_orders + s.cp_orders,
-        cp_revenue: acc.cp_revenue + s.cp_revenue,
-        c24_orders: acc.c24_orders + s.c24_orders,
-        c24_revenue: acc.c24_revenue + s.c24_revenue,
-        total_orders: acc.total_orders + s.total_orders,
-        total_revenue: acc.total_revenue + s.total_revenue,
-    }), { ss_orders: 0, ss_revenue: 0, cp_orders: 0, cp_revenue: 0, c24_orders: 0, c24_revenue: 0, total_orders: 0, total_revenue: 0 });
-
-    return `
-    <div class="report-section-header" style="margin-top:32px">
-        <h2><i class="ri-shopping-bag-line"></i> 매출 현황 — ${dateRange.label}</h2>
-    </div>
-    <div class="report-sales-table-wrap">
-        <table class="report-sales-table">
-            <thead>
-                <tr>
-                    <th rowspan="2">제품</th>
-                    <th colspan="2">스마트스토어</th>
-                    <th colspan="2">쿠팡</th>
-                    <th colspan="2">자사몰</th>
-                    <th colspan="2">합계</th>
-                </tr>
-                <tr>
-                    <th>주문</th><th>매출</th>
-                    <th>주문</th><th>매출</th>
-                    <th>주문</th><th>매출</th>
-                    <th>주문</th><th>매출</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${rows}
-            </tbody>
-            <tfoot>
-                <tr>
-                    <td><strong>전체 합계</strong></td>
-                    <td class="num">${formatMetric(grandTotals.ss_orders)}</td>
-                    <td class="num">${formatWon(grandTotals.ss_revenue)}</td>
-                    <td class="num">${formatMetric(grandTotals.cp_orders)}</td>
-                    <td class="num">${formatWon(grandTotals.cp_revenue)}</td>
-                    <td class="num">${formatMetric(grandTotals.c24_orders)}</td>
-                    <td class="num">${formatWon(grandTotals.c24_revenue)}</td>
-                    <td class="num total">${formatMetric(grandTotals.total_orders)}</td>
-                    <td class="num total">${formatWon(grandTotals.total_revenue)}</td>
-                </tr>
-            </tfoot>
-        </table>
-    </div>`;
-}
 
 async function setReportMode(mode) {
     state.reportMode = mode;
@@ -4301,7 +4177,7 @@ async function changeReportDate(date) {
 }
 
 async function navigateReport() {
-    const selectedDate = state.reportSelectedDate || kstDateString(-1);
+    const selectedDate = state.reportSelectedDate || kstDateString(0);
     let dateFrom = selectedDate;
     let dateTo = selectedDate;
 
@@ -4369,12 +4245,9 @@ async function navigate(view) {
             return;
         }
         if (!state.reportSelectedDate) {
-            state.reportSelectedDate = kstDateString(-1);
+            state.reportSelectedDate = kstDateString(0);
         }
         state.workLogs = await loadWorkLogs(null, state.reportSelectedDate, state.reportSelectedDate);
-        if (isInternalUser()) {
-            await loadMarketingData();
-        }
     }
 
     renderApp();
