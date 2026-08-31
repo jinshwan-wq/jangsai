@@ -3995,9 +3995,10 @@ async function selectWorklogPerson(personKey) {
     renderApp();
 }
 
-function clearWorklogPerson() {
+async function clearWorklogPerson() {
     state.worklogSelectedPerson = null;
-    state.workLogs = [];
+    const today = kstDateString(0);
+    state.workLogs = await loadWorkLogs(null, today, today);
     renderApp();
 }
 
@@ -4009,9 +4010,7 @@ function renderWorklogDetail() {
     const today = kstDateString(0);
     const dates = [];
     for (let i = 0; i < 30; i++) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().slice(0, 10));
+        dates.push(kstDateString(-i));
     }
 
     const logRows = dates.map(date => {
@@ -4237,6 +4236,9 @@ async function navigate(view) {
         }
         if (state.worklogSelectedPerson) {
             state.workLogs = await loadWorkLogs(state.worklogSelectedPerson);
+        } else {
+            const today = kstDateString(0);
+            state.workLogs = await loadWorkLogs(null, today, today);
         }
     } else if (view === 'report') {
         if (state.profile?.role_id !== 'admin') {
