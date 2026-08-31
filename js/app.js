@@ -156,6 +156,7 @@ function formatDateTime(dateStr) {
     const date = new Date(dateStr);
     if (Number.isNaN(date.getTime())) return '접속 기록 없음';
     return date.toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul',
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -253,6 +254,23 @@ async function recordCurrentUserAccess() {
         return;
     }
     state.profile.last_seen_at = data;
+}
+
+let lastSeenHeartbeatTimer = null;
+
+function startLastSeenHeartbeat() {
+    stopLastSeenHeartbeat();
+    recordCurrentUserAccess();
+    lastSeenHeartbeatTimer = setInterval(() => {
+        if (!document.hidden) recordCurrentUserAccess();
+    }, 60_000);
+}
+
+function stopLastSeenHeartbeat() {
+    if (lastSeenHeartbeatTimer) {
+        clearInterval(lastSeenHeartbeatTimer);
+        lastSeenHeartbeatTimer = null;
+    }
 }
 
 async function loadProfile() {
@@ -430,12 +448,45 @@ function stopMarketingAutoRefresh() {
     marketingRefreshTimer = null;
 }
 
+let profilesRealtimeChannel = null;
+
 async function loadAdminUsers() {
     const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
     if (error) { console.error('사용자 로드 실패:', error); return; }
     const profiles = data || [];
     state.adminUsers = profiles.filter(profile => isProfileApproved(profile));
     state.adminRequests = profiles.filter(profile => ['pending', 'rejected'].includes(getApprovalStatus(profile)));
+}
+
+function subscribeProfilesRealtime() {
+    unsubscribeProfilesRealtime();
+    profilesRealtimeChannel = sb
+        .channel('profiles-admin')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, payload => {
+            const updated = payload.new;
+            if (!updated?.id) return;
+            const idx = state.adminUsers.findIndex(u => u.id === updated.id);
+            if (idx !== -1) {
+                state.adminUsers[idx] = { ...state.adminUsers[idx], ...updated };
+                if (state.currentView === 'admin' && state.adminTab === 'users') {
+                    const row = document.getElementById(`user-row-${updated.id}`);
+                    if (row) {
+                        const cells = row.querySelectorAll('td');
+                        if (cells.length >= 4) {
+                            cells[3].textContent = formatDateTime(updated.last_seen_at);
+                        }
+                    }
+                }
+            }
+        })
+        .subscribe();
+}
+
+function unsubscribeProfilesRealtime() {
+    if (profilesRealtimeChannel) {
+        sb.removeChannel(profilesRealtimeChannel);
+        profilesRealtimeChannel = null;
+    }
 }
 
 async function loadAdminPrograms() {
@@ -1074,7 +1125,7 @@ function getSelectedBrands() {
 }
 
 function getVisibleMarketingMetrics() {
-    const { from, to } = getPeriodBounds(state.marketingPeriod);
+    const { from, to } = getPeriodBounds(state.marketingPeriod, { anchorYesterday: true });
     const selectedIds = getSelectedProductIds();
 
     return state.marketingMetrics.filter(metric =>
@@ -1084,13 +1135,14 @@ function getVisibleMarketingMetrics() {
     );
 }
 
-function getPeriodBounds(period) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const from = new Date(today);
-    const to = new Date(today);
+function getPeriodBounds(period, { anchorYesterday = false } = {}) {
+    const anchor = new Date();
+    anchor.setHours(0, 0, 0, 0);
+    if (anchorYesterday) anchor.setDate(anchor.getDate() - 1);
+    const from = new Date(anchor);
+    const to = new Date(anchor);
 
-    if (period === 'yesterday') {
+    if (period === 'yesterday' && !anchorYesterday) {
         from.setDate(from.getDate() - 1);
         to.setDate(to.getDate() - 1);
     } else if (period === 'week') {
@@ -1644,7 +1696,7 @@ function kstDateString(offsetDays = 0) {
 }
 
 function getReportDates() {
-    const { from, to } = getPeriodBounds(state.reportPeriod);
+    const { from, to } = getPeriodBounds(state.reportPeriod, { anchorYesterday: true });
     const dates = [];
     const cursor = new Date(`${to}T00:00:00`);
     const first = new Date(`${from}T00:00:00`);
@@ -2084,13 +2136,14 @@ function renderInternalDashboardView() {
 
 function getGrokBridgeStatus(metricDate) {
     const client = state.marketingBridgeClients.find(item => item.client_key === 'grok-marketing-ops') || null;
-    const jobs = state.marketingBridgeJobs.filter(job => job.metric_date === metricDate);
+    const kstToday = kstDateString(0);
+    const jobs = state.marketingBridgeJobs.filter(job => job.metric_date === metricDate && job.metric_date < kstToday);
     const metricsByProduct = new Map(
         state.marketingMetrics
             .filter(metric => metric.metric_date === metricDate)
             .map(metric => [metric.product_id, metric])
     );
-    const missingProducts = state.marketingProducts.filter(product => {
+    const missingProducts = metricDate >= kstToday ? [] : state.marketingProducts.filter(product => {
         const metric = metricsByProduct.get(product.id);
         return !metric ||
             !hasCollectedMetric(metric, 'smartstore_visits') ||
@@ -2211,6 +2264,7 @@ function getGrokBridgeStatus(metricDate) {
 
 function isGrokJobOverdue(job, now = new Date()) {
     if (!job?.metric_date || !['pending', 'claimed'].includes(job.status)) return false;
+    if (job.metric_date >= kstDateString(0)) return false;
     const [hour, minute] = job.provider === 'coupang' ? [12, 40] : [9, 30];
     const nextDay = new Date(`${job.metric_date}T00:00:00Z`);
     nextDay.setUTCDate(nextDay.getUTCDate() + 1);
@@ -2514,17 +2568,23 @@ function setMarketingView(view) {
     renderApp();
 }
 
-function renderPeriodOptions(selected, includeThreeDays = false) {
-    const options = [
-        ['1d', '오늘 · 1일'],
-        ['yesterday', '어제'],
-        ...(includeThreeDays ? [['3d', '최근 3일']] : []),
-        ['7d', '최근 7일'],
-        ['14d', '최근 14일'],
-        ['30d', '최근 30일'],
-        ['week', '이번 주'],
-        ['month', '이번 달'],
-    ];
+function renderPeriodOptions(selected, isReport = false) {
+    const options = isReport
+        ? [
+            ['1d', '어제'],
+            ['3d', '최근 3일'],
+            ['7d', '최근 7일'],
+            ['14d', '최근 14일'],
+            ['30d', '최근 30일'],
+        ]
+        : [
+            ['1d', '어제'],
+            ['7d', '최근 7일'],
+            ['14d', '최근 14일'],
+            ['30d', '최근 30일'],
+            ['week', '이번 주'],
+            ['month', '이번 달'],
+        ];
     return options.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
 }
 
@@ -4019,7 +4079,7 @@ function renderWorklogDetail() {
 // ==========================================
 
 function renderReportView() {
-    const selectedDate = state.reportSelectedDate || kstDateString(0);
+    const selectedDate = state.reportSelectedDate || kstDateString(-1);
     const isWeekly = state.reportMode === 'weekly';
 
     let dateRange;
@@ -4239,7 +4299,7 @@ async function changeReportDate(date) {
 }
 
 async function navigateReport() {
-    const selectedDate = state.reportSelectedDate || kstDateString(0);
+    const selectedDate = state.reportSelectedDate || kstDateString(-1);
     let dateFrom = selectedDate;
     let dateTo = selectedDate;
 
@@ -4265,6 +4325,7 @@ async function navigateReport() {
 async function navigate(view) {
     state.currentView = view;
     if (view !== 'dashboard') stopMarketingAutoRefresh();
+    if (view !== 'admin') unsubscribeProfilesRealtime();
 
     if (view === 'dashboard') {
         await loadRoles();
@@ -4289,6 +4350,7 @@ async function navigate(view) {
         await loadRoles();
         await loadAdminUsers();
         await loadAdminPrograms();
+        subscribeProfilesRealtime();
     } else if (view === 'worklog') {
         if (state.profile?.role_id !== 'admin') {
             showToast('관리자 권한이 필요합니다', 'error');
@@ -4305,7 +4367,7 @@ async function navigate(view) {
             return;
         }
         if (!state.reportSelectedDate) {
-            state.reportSelectedDate = kstDateString(0);
+            state.reportSelectedDate = kstDateString(-1);
         }
         state.workLogs = await loadWorkLogs(null, state.reportSelectedDate, state.reportSelectedDate);
         if (isInternalUser()) {
@@ -4359,6 +4421,7 @@ async function init() {
             await loadProfile();
 
             if (state.profile && isProfileApproved(state.profile)) {
+                startLastSeenHeartbeat();
                 hideLoadingScreen();
                 await navigate('dashboard');
                 handleCafe24OAuthResult();
@@ -4379,6 +4442,7 @@ async function init() {
                     await loadProfile();
                     hideLoadingScreen();
                     if (state.profile && isProfileApproved(state.profile)) {
+                        startLastSeenHeartbeat();
                         navigate('dashboard');
                     } else {
                         if (state.profile) await sb.auth.signOut();
@@ -4412,9 +4476,11 @@ async function init() {
                         status === 'rejected' ? 'error' : 'warning'
                     );
                 } else if (!state.registrationInProgress && state.currentView === 'auth') {
+                    startLastSeenHeartbeat();
                     navigate('dashboard');
                 }
             } else if (event === 'SIGNED_OUT') {
+                stopLastSeenHeartbeat();
                 state.user = null;
                 state.profile = null;
                 navigate('auth');
@@ -4428,8 +4494,17 @@ async function init() {
 }
 
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) refreshMarketingDashboard();
+    if (!document.hidden) {
+        refreshMarketingDashboard();
+        recordCurrentUserAccess();
+    }
 });
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('focus', () => {
+        recordCurrentUserAccess();
+    });
+}
 
 // 앱 시작
 if (document.readyState === 'loading') {
