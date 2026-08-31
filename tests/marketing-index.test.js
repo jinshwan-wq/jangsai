@@ -390,7 +390,7 @@ assert.match(
     '일일 보고서에 전일 대비 증감을 표시한다'
 );
 
-const today = new Date().toISOString().slice(0, 10);
+const yesterday = vm.runInContext('kstDateString(-1)', context);
 vm.runInContext(`
     state.user = { id: 'user-1', email: 'employee@jangsai.local' };
     state.profile = { role_id: 'employee', display_name: '테스트 직원' };
@@ -398,9 +398,9 @@ vm.runInContext(`
         { id: 'product-1', brand: '테스트브랜드', name: '테스트상품', slug: 'test', sort_order: 1 },
         { id: 'product-2', brand: '테스트브랜드', name: '두번째상품', slug: 'test-2', sort_order: 2 }
     ];
-    state.marketingBrandMetrics = [{ brand: '테스트브랜드', metric_date: '${today}', naver_ad_spend: 4321 }];
+    state.marketingBrandMetrics = [{ brand: '테스트브랜드', metric_date: '${yesterday}', naver_ad_spend: 4321 }];
     state.marketingMetrics = [{
-        product_id: 'product-1', metric_date: '${today}',
+        product_id: 'product-1', metric_date: '${yesterday}',
         blog_views: 100, cafe_views: 100, cafe24_visits: 20, cafe24_orders: 2,
         smartstore_visits: 38, smartstore_orders: 3, smartstore_pay_count: 2, smartstore_conversion_rate: 5.3,
         coupang_visits: null, coupang_orders: 0,
