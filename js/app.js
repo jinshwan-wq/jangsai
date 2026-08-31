@@ -9,7 +9,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const EMAIL_DOMAIN = '@jangsai.local';
 const OWNER_EMAIL = 'kher2000@jangsai.local';
 const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbw_kV92ocY27UZGbnSJHhmYDlRK6gzqJDU76HV2VJAvybtmmRihz1vDthCGlvLvAC0/exec';
-const GROK_RUNBOOK_VERSION = 6;
+const GROK_RUNBOOK_VERSION = 7;
 const MARKETING_AUTO_REFRESH_MS = 60 * 1000;
 
 // --- 등급별 색상 ---
@@ -89,7 +89,7 @@ const state = {
     marketingBridgeClients: [],
     selectedMarketingProduct: 'all',
     marketingPeriod: '7d',
-    marketingView: 'report',
+    marketingView: 'overview',
     reportPeriod: '3d',
     marketingDataReady: true,
     marketingLastRefreshedAt: null,
@@ -873,6 +873,100 @@ function getChannelOrders(metric, channel) {
     return metricNumber(metric?.[conversionOrders]);
 }
 
+function getChannelConversionMeasurement(metric, channelId) {
+    if (!metric) return null;
+    const channel = MARKETING_CHANNELS.find(item => item.id === channelId);
+    if (!channel || !isChannelPairMeasured(metric, channel)) return null;
+    const visits = getChannelVisits(metric, channel);
+    const cafe24Official = channelId === 'cafe24' &&
+        hasCollectedMetric(metric, 'cafe24_purchase_count');
+    const purchases = cafe24Official
+        ? metricNumber(metric.cafe24_purchase_count)
+        : getChannelOrders(metric, channel);
+    if (visits === null || visits < 0 || purchases < 0) return null;
+    const calculatedRate = visits > 0 ? percent(purchases, visits) : (purchases === 0 ? 0 : null);
+    const officialRateKey = channelId === 'smartstore'
+        ? 'smartstore_conversion_rate'
+        : channelId === 'cafe24'
+            ? 'cafe24_conversion_rate'
+            : channelId === 'coupang'
+                ? 'coupang_conversion_rate'
+                : null;
+    const officialRate = officialRateKey && hasCollectedMetric(metric, officialRateKey)
+        ? nullableMetricNumber(metric[officialRateKey])
+        : null;
+    return {
+        visits,
+        purchases,
+        rate: officialRate === null ? calculatedRate : officialRate,
+        basis: channelId === 'smartstore'
+            ? '스마트스토어 공식 구매전환율'
+            : channelId === 'cafe24'
+                ? cafe24Official
+                    ? 'Cafe24 공식 상품조회·판매건 기준'
+                    : 'Cafe24 상품조회·판매수량 기준'
+                : officialRate === null
+                    ? '쿠팡 공식 방문자·판매량 기준'
+                    : '쿠팡 공식 구매전환율',
+    };
+}
+
+function getWeightedChannelConversion(metrics, channelId) {
+    const measurements = metrics
+        .map(metric => getChannelConversionMeasurement(metric, channelId))
+        .filter(Boolean);
+    if (!measurements.length) return null;
+    const visits = measurements.reduce((sum, item) => sum + item.visits, 0);
+    const purchases = measurements.reduce((sum, item) => sum + item.purchases, 0);
+    const weightedRate = visits > 0
+        ? measurements.reduce((sum, item) => sum + item.rate * item.visits, 0) / visits
+        : (purchases === 0 ? 0 : null);
+    return {
+        visits,
+        purchases,
+        rate: measurements.length === 1
+            ? measurements[0].rate
+            : weightedRate,
+        measuredRows: measurements.length,
+    };
+}
+
+function shiftMetricDate(date, offsetDays) {
+    const value = new Date(`${date}T00:00:00Z`);
+    value.setUTCDate(value.getUTCDate() + offsetDays);
+    return value.toISOString().slice(0, 10);
+}
+
+function getProductMetricOnDate(productId, metricDate) {
+    return state.marketingMetrics.find(metric =>
+        metric.product_id === productId && metric.metric_date === metricDate
+    ) || null;
+}
+
+function getChannelConversionSummary(productIds, channelId, metricDate, days = 7) {
+    const ids = productIds instanceof Set ? productIds : new Set(productIds);
+    const fromDate = shiftMetricDate(metricDate, -(days - 1));
+    const currentMetrics = state.marketingMetrics.filter(metric =>
+        ids.has(metric.product_id) && metric.metric_date === metricDate
+    );
+    const previousDate = shiftMetricDate(metricDate, -1);
+    const previousMetrics = state.marketingMetrics.filter(metric =>
+        ids.has(metric.product_id) && metric.metric_date === previousDate
+    );
+    const windowMetrics = state.marketingMetrics.filter(metric =>
+        ids.has(metric.product_id) &&
+        metric.metric_date >= fromDate &&
+        metric.metric_date <= metricDate
+    );
+    return {
+        current: getWeightedChannelConversion(currentMetrics, channelId),
+        previous: getWeightedChannelConversion(previousMetrics, channelId),
+        average: getWeightedChannelConversion(windowMetrics, channelId),
+        fromDate,
+        toDate: metricDate,
+    };
+}
+
 function getSelectedProductIds() {
     if (state.selectedMarketingProduct === 'all') return new Set(state.marketingProducts.map(product => product.id));
     if (state.selectedMarketingProduct.startsWith('brand:')) {
@@ -1524,9 +1618,20 @@ function renderDailyReportTable(product) {
 
                 <tr class="report-section-row"><th colspan="${dates.length + 1}"><i class="ri-route-line"></i> 채널 유입</th></tr>
                 ${renderReportRow('자사몰', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[0]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[0]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('자사몰 전환율', dates, metricsByDate, metric => {
+                    const conversion = getChannelConversionMeasurement(metric, 'cafe24');
+                    return conversion?.rate === null || conversion?.rate === undefined ? '<span class="report-no-data">—</span>' : `${conversion.rate.toFixed(1)}%`;
+                }, { indent: true })}
                 ${renderReportRow('스마트스토어', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[1]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[1]))) : '<span class="report-no-data">—</span>', { indent: true })}
-                ${renderReportRow('스마트스토어 구매전환율', dates, metricsByDate, metric => metric && hasCollectedMetric(metric, 'smartstore_conversion_rate') ? `${metricNumber(metric.smartstore_conversion_rate).toFixed(1)}%` : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('스마트스토어 전환율', dates, metricsByDate, metric => {
+                    const conversion = getChannelConversionMeasurement(metric, 'smartstore');
+                    return conversion?.rate === null || conversion?.rate === undefined ? '<span class="report-no-data">—</span>' : `${conversion.rate.toFixed(1)}%`;
+                }, { indent: true })}
                 ${renderReportRow('쿠팡', dates, metricsByDate, metric => metric ? (getChannelVisits(metric, MARKETING_CHANNELS[2]) === null ? '<span class="report-no-data">—</span>' : formatMetric(getChannelVisits(metric, MARKETING_CHANNELS[2]))) : '<span class="report-no-data">—</span>', { indent: true })}
+                ${renderReportRow('쿠팡 전환율', dates, metricsByDate, metric => {
+                    const conversion = getChannelConversionMeasurement(metric, 'coupang');
+                    return conversion?.rate === null || conversion?.rate === undefined ? '<span class="report-no-data">—</span>' : `${conversion.rate.toFixed(1)}%`;
+                }, { indent: true })}
                 ${renderReportRow('측정 유입 합계', dates, metricsByDate, metric => {
                     if (!metric) return '<span class="report-no-data">—</span>';
                     const day = aggregateMarketingMetrics([metric]);
@@ -1563,6 +1668,180 @@ function renderDailyReportTable(product) {
     </div>`;
 }
 
+function renderOverviewTrend(current, previous, options = {}) {
+    if (current === null || previous === null || !Number.isFinite(current) || !Number.isFinite(previous)) return '';
+    const difference = current - previous;
+    if (Math.abs(difference) < 0.0001) return '<small class="overview-trend same">변동 없음</small>';
+    const formatted = options.percent
+        ? `${Math.abs(difference).toFixed(1)}%p`
+        : options.won
+            ? formatWon(Math.abs(difference))
+            : formatMetric(Math.abs(difference));
+    return `<small class="overview-trend ${difference > 0 ? 'up' : 'down'}">${difference > 0 ? '▲' : '▼'} ${formatted}</small>`;
+}
+
+function renderOverviewMetricCell(current, previous, options = {}) {
+    if (current === null || current === undefined || !Number.isFinite(current)) {
+        return '<td><span class="overview-no-data">—</span></td>';
+    }
+    const value = options.percent
+        ? `${current.toFixed(1)}%`
+        : options.won
+            ? formatWon(current)
+            : formatMetric(current);
+    return `<td><strong>${value}</strong>${renderOverviewTrend(current, previous, options)}${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
+}
+
+function completeMetricValue(metric, key) {
+    return metric && hasCollectedMetric(metric, key) ? metricNumber(metric[key]) : null;
+}
+
+function completeCoupangValue(metric, suffix) {
+    return metric && hasCollectedCoupangMetric(metric, suffix)
+        ? getCoupangMetric(metric, suffix)
+        : null;
+}
+
+function renderOverviewConversionCell(productId, channelId, metricDate) {
+    const summary = getChannelConversionSummary(new Set([productId]), channelId, metricDate);
+    const current = summary.current?.rate ?? null;
+    const previous = summary.previous?.rate ?? null;
+    const average = summary.average?.rate ?? null;
+    return renderOverviewMetricCell(current, previous, {
+        percent: true,
+        note: average === null ? '7일 평균 —' : `7일 평균 ${average.toFixed(1)}%`,
+    });
+}
+
+function renderChannelConversionPanel(metricDate) {
+    const productIds = new Set(state.marketingProducts.map(product => product.id));
+    const channels = [
+        { id: 'cafe24', label: '자사몰 전환율', description: 'Cafe24 상품조회·판매건 기준' },
+        { id: 'smartstore', label: '스마트스토어 전환율', description: '공식 상품 구매전환율' },
+        { id: 'coupang', label: '쿠팡 전환율', description: 'Wing 공식 구매전환율 우선' },
+    ];
+    return `
+    <section class="channel-conversion-section">
+        <div class="overview-section-heading">
+            <div><span>CHANNEL CONVERSION</span><h2>채널별 구매 전환율</h2></div>
+            <small>${escapeHtml(metricDate)} 기준 · 최근 7일은 방문수 가중 평균</small>
+        </div>
+        <div class="channel-conversion-grid">
+            ${channels.map(channel => {
+                const summary = getChannelConversionSummary(productIds, channel.id, metricDate);
+                const current = summary.current?.rate ?? null;
+                const average = summary.average?.rate ?? null;
+                const gap = current !== null && average !== null ? current - average : null;
+                return `
+                <article class="channel-conversion-card">
+                    <span>${escapeHtml(channel.label)}</span>
+                    <strong>${current === null ? '—' : `${current.toFixed(1)}%`}</strong>
+                    <div><b>최근 7일 평균</b><em>${average === null ? '—' : `${average.toFixed(1)}%`}</em></div>
+                    <small class="${gap === null || Math.abs(gap) < 0.05 ? 'same' : gap > 0 ? 'up' : 'down'}">
+                        ${gap === null ? '비교 데이터 부족' : Math.abs(gap) < 0.05 ? '7일 평균과 동일' : `평균보다 ${gap > 0 ? '+' : ''}${gap.toFixed(1)}%p`}
+                    </small>
+                    <p>${escapeHtml(channel.description)}</p>
+                </article>`;
+            }).join('')}
+        </div>
+    </section>`;
+}
+
+function renderMarketingComparisonMatrix(metricDate) {
+    const previousDate = shiftMetricDate(metricDate, -1);
+    return `
+    <section class="marketing-comparison-section">
+        <div class="overview-section-heading">
+            <div><span>ALL PRODUCTS</span><h2>4개 제품 통합 비교</h2></div>
+            <small>${escapeHtml(metricDate)} · 각 행을 누르면 제품별 상세 보고서로 이동</small>
+        </div>
+        <div class="marketing-comparison-scroll">
+            <table class="marketing-comparison-table">
+                <thead>
+                    <tr class="comparison-groups">
+                        <th rowspan="2">브랜드·제품</th>
+                        <th colspan="2">검색·콘텐츠</th>
+                        <th colspan="3">채널 유입</th>
+                        <th colspan="4">판매량</th>
+                        <th colspan="2">성과</th>
+                        <th colspan="3">채널 전환율</th>
+                    </tr>
+                    <tr>
+                        <th>검색량</th><th>블로그</th>
+                        <th>자사몰</th><th>스마트스토어</th><th>쿠팡</th>
+                        <th>자사몰</th><th>스스</th><th>Wing</th><th>로켓그로스</th>
+                        <th>총매출</th><th>광고비</th>
+                        <th>자사몰</th><th>스스</th><th>쿠팡</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${state.marketingProducts.map((product, index) => {
+                        const current = getProductMetricOnDate(product.id, metricDate);
+                        const previous = getProductMetricOnDate(product.id, previousDate);
+                        const currentRevenue = current && isRevenueComplete(current) ? getMetricRevenue(current) : null;
+                        const previousRevenue = previous && isRevenueComplete(previous) ? getMetricRevenue(previous) : null;
+                        return `
+                        <tr class="${index > 0 && state.marketingProducts[index - 1]?.brand !== product.brand ? 'brand-divider' : ''}"
+                            onclick="openProductReport('${product.id}')">
+                            <th><small>${escapeHtml(product.brand)}</small><strong>${escapeHtml(product.name)}</strong></th>
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'keyword_search_volume'), completeMetricValue(previous, 'keyword_search_volume'))}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'blog_views'), completeMetricValue(previous, 'blog_views'))}
+                            ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[0]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[0]) : null)}
+                            ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[1]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[1]) : null)}
+                            ${renderOverviewMetricCell(completeCoupangValue(current, 'visits'), completeCoupangValue(previous, 'visits'))}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'cafe24_orders'), completeMetricValue(previous, 'cafe24_orders'))}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'smartstore_orders'), completeMetricValue(previous, 'smartstore_orders'))}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_wing_orders'), completeMetricValue(previous, 'coupang_wing_orders'))}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_growth_orders'), completeMetricValue(previous, 'coupang_growth_orders'))}
+                            ${renderOverviewMetricCell(currentRevenue, previousRevenue, { won: true })}
+                            ${renderOverviewMetricCell(completeMetricValue(current, 'ad_spend'), completeMetricValue(previous, 'ad_spend'), { won: true })}
+                            ${renderOverviewConversionCell(product.id, 'cafe24', metricDate)}
+                            ${renderOverviewConversionCell(product.id, 'smartstore', metricDate)}
+                            ${renderOverviewConversionCell(product.id, 'coupang', metricDate)}
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+    </section>`;
+}
+
+function renderOverviewDashboardView() {
+    const expectedDate = kstDateString(-1);
+    return `
+    ${renderNavbar()}
+    <main class="internal-dashboard overview-dashboard">
+        <section class="internal-hero">
+            <div>
+                <span class="eyebrow"><i class="ri-dashboard-line"></i> DAILY MARKETING OVERVIEW</span>
+                <h1>모든 제품을 <span>한곳에서</span></h1>
+                <p>검색부터 유입·판매·매출·전환율까지 전일 성과를 한 화면에서 비교합니다.</p>
+            </div>
+            <div class="internal-actions">
+                <span class="overview-reference-date">${escapeHtml(expectedDate)} 기준</span>
+                <button class="btn btn-secondary" onclick="showDailyMetricModal()"><i class="ri-edit-line"></i> 누락 데이터 보완</button>
+            </div>
+        </section>
+
+        <section class="marketing-view-switch">
+            <button class="active" onclick="setMarketingView('overview')"><i class="ri-dashboard-line"></i> 통합 현황</button>
+            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 제품별 보고서</button>
+            <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
+            <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
+        </section>
+
+        ${renderGrokBridgeStatus(expectedDate)}
+
+        <section class="collection-owner-grid">
+            <article><i class="ri-cloud-line"></i><span><strong>서버 자동수집</strong><small>검색량 · 블로그 · 자사몰 유입/판매/매출 · 광고비</small></span></article>
+            <article><i class="ri-robot-2-line"></i><span><strong>Grok 자동수집</strong><small>스마트스토어 유입/판매/매출 · 쿠팡 유입/Wing/로켓그로스/매출</small></span></article>
+        </section>
+
+        ${renderChannelConversionPanel(expectedDate)}
+        ${renderMarketingComparisonMatrix(expectedDate)}
+    </main>`;
+}
+
 function renderInternalReportView() {
     const product = getReportProduct();
     if (!product) return `${renderNavbar()}<main class="internal-dashboard"><div class="marketing-empty-row">제품 정보를 불러오는 중입니다.</div></main>`;
@@ -1585,7 +1864,8 @@ function renderInternalReportView() {
         </section>
 
         <section class="marketing-view-switch">
-            <button class="active" onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button onclick="setMarketingView('overview')"><i class="ri-dashboard-line"></i> 통합 현황</button>
+            <button class="active" onclick="setMarketingView('report')"><i class="ri-table-line"></i> 제품별 보고서</button>
             <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
             <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
@@ -1618,6 +1898,7 @@ function renderInternalReportView() {
 }
 
 function renderInternalDashboardView() {
+    if (state.marketingView === 'overview') return renderOverviewDashboardView();
     if (state.marketingView === 'report') return renderInternalReportView();
     if (state.marketingView === 'okr') return renderOkrDashboardView();
     return renderFunnelDashboardView();
@@ -1641,7 +1922,8 @@ function getGrokBridgeStatus(metricDate) {
             !hasCollectedMetric(metric, 'smartstore_revenue') ||
             !hasCollectedCoupangMetric(metric, 'visits') ||
             !hasCollectedCoupangMetric(metric, 'orders') ||
-            !hasCollectedCoupangMetric(metric, 'revenue');
+            !hasCollectedCoupangMetric(metric, 'revenue') ||
+            !hasCollectedMetric(metric, 'coupang_conversion_rate');
     });
     const needsLogin = jobs.find(job => job.status === 'needs_login');
     const failed = jobs.find(job => job.status === 'failed');
@@ -1751,7 +2033,7 @@ function getGrokBridgeStatus(metricDate) {
 
 function isGrokJobOverdue(job, now = new Date()) {
     if (!job?.metric_date || !['pending', 'claimed'].includes(job.status)) return false;
-    const [hour, minute] = job.provider === 'coupang' ? [12, 40] : [9, 50];
+    const [hour, minute] = job.provider === 'coupang' ? [12, 40] : [9, 30];
     const nextDay = new Date(`${job.metric_date}T00:00:00Z`);
     nextDay.setUTCDate(nextDay.getUTCDate() + 1);
     const deadline = new Date(
@@ -1829,7 +2111,8 @@ function renderFunnelDashboardView() {
         </section>
 
         <section class="marketing-view-switch">
-            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button onclick="setMarketingView('overview')"><i class="ri-dashboard-line"></i> 통합 현황</button>
+            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 제품별 보고서</button>
             <button class="active" onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
             <button onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
@@ -2011,7 +2294,8 @@ function renderOkrDashboardView() {
             <div><span class="eyebrow"><i class="ri-flag-line"></i> PERFORMANCE OKR</span><h1>분기·연간 목표를 <span>숫자로</span></h1><p>일별 원천 데이터로 목표 달성률과 필요한 실행량을 계산합니다.</p></div>
         </section>
         <section class="marketing-view-switch">
-            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 일일 보고서</button>
+            <button onclick="setMarketingView('overview')"><i class="ri-dashboard-line"></i> 통합 현황</button>
+            <button onclick="setMarketingView('report')"><i class="ri-table-line"></i> 제품별 보고서</button>
             <button onclick="setMarketingView('funnel')"><i class="ri-line-chart-line"></i> 퍼널 분석</button>
             <button class="active" onclick="setMarketingView('okr')"><i class="ri-flag-line"></i> OKR 성과</button>
         </section>
@@ -2030,6 +2314,12 @@ function renderOkrDashboardView() {
 
 function selectMarketingProduct(productId) {
     state.selectedMarketingProduct = productId;
+    renderApp();
+}
+
+function openProductReport(productId) {
+    state.selectedMarketingProduct = productId;
+    state.marketingView = 'report';
     renderApp();
 }
 

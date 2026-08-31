@@ -2793,6 +2793,273 @@ textarea.form-input {
     border: 0;
 }
 
+.overview-reference-date {
+    padding: 9px 13px;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-full);
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.collection-owner-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.collection-owner-grid article {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    padding: 15px 18px;
+    background: var(--bg-surface);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+}
+
+.collection-owner-grid i {
+    color: var(--accent-light);
+    font-size: 1.25rem;
+}
+
+.collection-owner-grid span,
+.collection-owner-grid strong,
+.collection-owner-grid small {
+    display: block;
+}
+
+.collection-owner-grid strong {
+    color: var(--text-primary);
+    font-size: 0.82rem;
+}
+
+.collection-owner-grid small {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    line-height: 1.4;
+}
+
+.channel-conversion-section,
+.marketing-comparison-section {
+    padding: 22px;
+    background: var(--bg-surface);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+}
+
+.overview-section-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 17px;
+}
+
+.overview-section-heading span {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--accent-light);
+    font-size: 0.64rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+}
+
+.overview-section-heading h2 {
+    color: var(--text-primary);
+    font-size: 1.05rem;
+}
+
+.overview-section-heading > small {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-align: right;
+}
+
+.channel-conversion-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.channel-conversion-card {
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+}
+
+.channel-conversion-card > span {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.channel-conversion-card > strong {
+    display: block;
+    margin: 7px 0 13px;
+    color: var(--text-primary);
+    font-size: 1.65rem;
+}
+
+.channel-conversion-card > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 11px;
+    border-top: 1px solid var(--glass-border);
+    font-size: 0.7rem;
+}
+
+.channel-conversion-card > div b {
+    color: var(--text-muted);
+}
+
+.channel-conversion-card > div em {
+    color: var(--text-primary);
+    font-style: normal;
+    font-weight: 800;
+}
+
+.channel-conversion-card > small {
+    display: block;
+    margin-top: 7px;
+    font-size: 0.67rem;
+    font-weight: 700;
+}
+
+.channel-conversion-card > small.up,
+.overview-trend.up { color: var(--success); }
+
+.channel-conversion-card > small.down,
+.overview-trend.down { color: var(--error); }
+
+.channel-conversion-card > small.same,
+.overview-trend.same { color: var(--text-muted); }
+
+.channel-conversion-card p {
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+}
+
+.marketing-comparison-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+}
+
+.marketing-comparison-table {
+    width: 100%;
+    min-width: 1780px;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.marketing-comparison-table th,
+.marketing-comparison-table td {
+    padding: 11px 12px;
+    border-right: 1px solid var(--glass-border);
+    border-bottom: 1px solid var(--glass-border);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.marketing-comparison-table thead th {
+    color: var(--text-muted);
+    background: #0b1327;
+    font-size: 0.66rem;
+    font-weight: 800;
+}
+
+.marketing-comparison-table thead .comparison-groups th {
+    color: var(--text-secondary);
+    text-align: center;
+    letter-spacing: 0.03em;
+}
+
+.marketing-comparison-table thead th:first-child,
+.marketing-comparison-table tbody th {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    min-width: 155px;
+    text-align: left;
+    background: #0b1327;
+}
+
+.marketing-comparison-table thead th:first-child {
+    z-index: 3;
+}
+
+.marketing-comparison-table tbody tr {
+    cursor: pointer;
+}
+
+.marketing-comparison-table tbody tr:hover td,
+.marketing-comparison-table tbody tr:hover th {
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.marketing-comparison-table tbody tr.brand-divider th,
+.marketing-comparison-table tbody tr.brand-divider td {
+    border-top: 2px solid var(--glass-border-hover);
+}
+
+.marketing-comparison-table tbody th small,
+.marketing-comparison-table tbody th strong {
+    display: block;
+}
+
+.marketing-comparison-table tbody th small {
+    color: var(--text-muted);
+    font-size: 0.62rem;
+}
+
+.marketing-comparison-table tbody th strong {
+    margin-top: 3px;
+    color: var(--text-primary);
+    font-size: 0.78rem;
+}
+
+.marketing-comparison-table tbody td > strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+}
+
+.overview-trend,
+.overview-cell-note {
+    display: block;
+    margin-top: 3px;
+    font-size: 0.6rem;
+}
+
+.overview-cell-note,
+.overview-no-data {
+    color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+    .collection-owner-grid,
+    .channel-conversion-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .overview-section-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+    }
+
+    .overview-section-heading > small {
+        text-align: left;
+    }
+}
+
 
 /* --- Responsive --- */
 @media (max-width: 768px) {

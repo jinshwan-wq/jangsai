@@ -21,9 +21,12 @@ export const TASK_REQUIREMENTS = Object.freeze({
     'coupang_wing_visits',
     'coupang_wing_orders',
     'coupang_wing_revenue',
+    'coupang_wing_conversion_rate',
     'coupang_growth_visits',
     'coupang_growth_orders',
     'coupang_growth_revenue',
+    'coupang_growth_conversion_rate',
+    'coupang_conversion_rate',
   ]),
 });
 
@@ -86,9 +89,13 @@ export function kstYesterday(now = new Date()) {
   return kst.toISOString().slice(0, 10);
 }
 
-export function providerReadyAt(provider, now = new Date()) {
+export function providerReadyAt(provider, metricDate = kstYesterday(), now = new Date()) {
   if (provider !== 'coupang') return true;
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kstToday = kst.toISOString().slice(0, 10);
+  const yesterday = new Date(`${kstToday}T00:00:00Z`);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  if (metricDate < yesterday.toISOString().slice(0, 10)) return true;
   return kst.getUTCHours() * 60 + kst.getUTCMinutes() >= 12 * 60 + 40;
 }
 
@@ -223,10 +230,21 @@ export function normalizeSmartstoreSubmission(account, metrics, sourceTotals, un
 
 function normalizeCoupangChannel(value, label) {
   const channel = assertObject(value, label);
+  const visits = assertSafeInteger(channel.visits, `${label} 방문수`, { max: MAX_VISITS });
+  const orders = assertSafeInteger(channel.orders, `${label} 판매량`, { min: -MAX_ORDERS, max: MAX_ORDERS });
+  const calculatedRate = visits > 0 ? Number(((Math.max(0, orders) / visits) * 100).toFixed(4)) : 0;
+  const conversionRate = channel.conversion_rate === undefined
+    ? calculatedRate
+    : Number(channel.conversion_rate);
+  if (!Number.isFinite(conversionRate) || conversionRate < 0 || conversionRate > 10_000) {
+    throw new Error(`${label} 구매전환율 값이 올바르지 않습니다.`);
+  }
   return {
-    visits: assertSafeInteger(channel.visits, `${label} 방문수`, { max: MAX_VISITS }),
-    orders: assertSafeInteger(channel.orders, `${label} 판매량`, { min: -MAX_ORDERS, max: MAX_ORDERS }),
+    visits,
+    orders,
     revenue: assertSafeInteger(channel.revenue, `${label} 매출`, { min: -MAX_REVENUE, max: MAX_REVENUE }),
+    conversion_rate: conversionRate,
+    conversion_source: channel.conversion_rate === undefined ? 'derived_from_official_counts' : 'official_screen',
   };
 }
 

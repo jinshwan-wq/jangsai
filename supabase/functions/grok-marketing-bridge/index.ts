@@ -13,7 +13,8 @@ import {
 } from "./contract.mjs";
 
 const CLIENT_KEY = "grok-marketing-ops";
-const RUNBOOK_VERSION = 6;
+const RUNBOOK_VERSION = 7;
+const BACKLOG_DAYS = 7;
 const PRODUCT_SLUGS = Object.values(ACCOUNT_PRODUCTS).flat().map((
   product: { slug: string },
 ) => product.slug);
@@ -22,6 +23,8 @@ const SNAPSHOT_FIELDS = [
   "cafe_views",
   "content_views",
   "cafe24_visits",
+  "cafe24_purchase_count",
+  "cafe24_conversion_rate",
   "cafe24_orders",
   "cafe24_revenue",
   "smartstore_visits",
@@ -32,17 +35,22 @@ const SNAPSHOT_FIELDS = [
   "coupang_wing_visits",
   "coupang_wing_orders",
   "coupang_wing_revenue",
+  "coupang_wing_conversion_rate",
   "coupang_growth_visits",
   "coupang_growth_orders",
   "coupang_growth_revenue",
+  "coupang_growth_conversion_rate",
   "coupang_visits",
   "coupang_orders",
   "coupang_revenue",
+  "coupang_conversion_rate",
   "ad_spend",
 ] as const;
 const NON_BROWSER_FIELDS = [
   "blog_views",
   "cafe24_visits",
+  "cafe24_purchase_count",
+  "cafe24_conversion_rate",
   "cafe24_orders",
   "cafe24_revenue",
   "ad_spend",
@@ -66,26 +74,33 @@ function operatorRunbook() {
     role: "JangsAI 마케팅 자동수집 보조 운영자",
     timezone: "Asia/Seoul",
     daily_schedule:
-      "매일 09:50 스마트스토어, 12:40 쿠팡, 14:00 최종 재검증 KST",
+      "매일 09:30 스마트스토어·확인 가능한 매출, 12:40 쿠팡 방문자, 13:00 최종 재검증 KST",
     objective:
       "로그인 채널의 전일 유입·전환·주문·매출을 수집하고 검증 결과를 대시보드 DB에 기록한다.",
     persistent_sessions: SESSION_KEYS,
+    session_strategy: {
+      smartstore:
+        "하나의 통합매니저 로그인 세션을 유지하고 이너리움·유랄 스토어만 전환한다.",
+      coupang: "기존 이너리움·유랄 로그인 세션을 유지한다.",
+    },
     bootstrap: [
-      "각 세션은 서로 다른 영구 브라우저 프로필 또는 격리된 컨테이너로 유지한다.",
-      "기존 로그인은 재사용하고, 로그인되지 않은 세션만 사용자에게 해당 계정 로그인을 요청한다.",
+      "스마트스토어는 현재 로그인된 통합매니저 세션을 재사용하며 로그아웃하거나 네이버 계정을 바꾸지 않는다.",
+      "스마트스토어 수집 시 통합매니저의 스토어 선택기에서 지정된 이너리움 또는 유랄 스토어로 이동한다.",
+      "쿠팡은 기존 로그인 세션을 재사용하고, 로그인되지 않은 세션만 사용자에게 로그인을 요청한다.",
       "계정명과 판매자 화면을 확인하기 전에는 수집하거나 submit하지 않는다.",
       "쿠팡에서 비밀번호 변경 화면이 나오면 변경하지 말고 같은 세션의 즐겨찾기 또는 주소창으로 https://wing.coupang.com 을 연다. 로그인 상태를 확인한 뒤 판매분석 URL을 다시 연다.",
       "세션 확인 후 heartbeat로 sessions 상태를 전송한다.",
     ],
     daily_workflow: [
-      "09:50 KST에 metric_date를 생략한 sync를 호출해 스마트스토어 유입·전환·주문·매출 누락을 처리한다.",
+      "09:30 KST에 metric_date를 생략한 sync를 호출해 최근 7일 스마트스토어 유입·전환·주문·매출 누락을 처리한다.",
       "쿠팡 전일 방문자 데이터는 12:40 KST 전에는 확정값이 아니므로 그 전에 쿠팡 job을 처리하지 않는다.",
-      "12:40 KST에 sync를 다시 호출해 쿠팡 누락을 처리한다.",
-      "14:00 KST에 sync를 마지막으로 호출해 실패 또는 로그인 복구 후 남은 job을 재처리한다.",
+      "12:40 KST에 sync를 다시 호출해 최근 7일 쿠팡 누락을 처리한다.",
+      "13:00 KST에 sync를 마지막으로 호출해 실패 또는 로그인 복구 후 남은 job을 재처리한다.",
       "응답 jobs가 없으면 데이터 수정 없이 dashboard_snapshot으로 일일 요약만 작성한다.",
-      "각 job을 claim한 뒤 해당 provider/account 전용 세션에서 source_url을 연다.",
+      "각 job을 claim한 뒤 지정 provider/account 화면을 연다. 스마트스토어는 통합매니저 세션 안에서 스토어만 전환한다.",
       "스마트스토어는 스토어분석에서 전일 제품별 방문수·상품결제건수와 판매수량·결제금액을 모두 읽는다.",
       "상품결제건수(pay_count)는 유입 전환 지표이고 판매수량(orders)은 매출 지표이므로 서로 바꾸지 않는다.",
+      "쿠팡은 판매자배송·로켓그로스별 공식 구매전환율이 표시되면 conversion_rate에 그대로 담는다.",
       "job의 payload와 submit_contract에 있는 필드만 읽고 공식 화면 합계와 대조한다.",
       "검증에 성공한 데이터만 submit한다. 추적 외 상품은 unmapped에만 담는다.",
       "일시 장애는 한 번 재시도하고, 계속 실패하면 fail로 회신한 뒤 다음 job을 처리한다.",
@@ -96,7 +111,7 @@ function operatorRunbook() {
     self_test_workflow: [
       "사용자가 즉시 검증을 요청하면 예약시각을 기다리지 않고 실행한다.",
       "sync의 전일 dashboard_snapshot을 기준값으로 사용한다.",
-      "네 영구 세션에서 스마트스토어 방문수·상품결제건수·판매수량·결제금액과 쿠팡 방문자·판매량·매출을 다시 읽는다.",
+      "통합매니저의 두 스마트스토어와 두 쿠팡 판매자 화면에서 방문수·상품결제건수·판매수량·결제금액을 다시 읽는다.",
       "공식 화면 합계와 상품 합계를 먼저 대조한 뒤 DB 기준값과 비교한다.",
       "self-test에서는 submit하지 않고 heartbeat.last_verification에 계정별 pass/mismatch/error만 기록한다.",
     ],
@@ -115,7 +130,7 @@ function operatorRunbook() {
       "Bridge가 허용한 과거 날짜와 작업만 처리하고 임의 날짜의 값을 추정하지 않는다.",
       "쿠팡 비밀번호 변경 유도 화면에서는 비밀번호 입력·변경을 시도하지 않는다.",
       "needs_login이면 사용자에게 이 Grok 대화에서 직접 알리고 Bridge에도 fail을 전송한다.",
-      "이 PC의 Chrome이나 로컬 수집 스크립트를 실행하지 않고 Grok 전용 클라우드 세션만 사용한다.",
+      "이 PC의 Chrome이나 로컬 수집 스크립트를 실행하지 않고 Grok 전용 브라우저 세션만 사용한다.",
     ],
     heartbeat_contract: {
       action: "heartbeat",
@@ -235,6 +250,16 @@ function metricDateFrom(body: Record<string, unknown>) {
     throw new Error("수집 날짜는 최근 90일 이내의 과거 날짜여야 합니다.");
   }
   return metricDate;
+}
+
+function kstBacklogDates(days = BACKLOG_DAYS) {
+  const dates = [];
+  const cursor = new Date(`${kstYesterday()}T00:00:00Z`);
+  for (let offset = 0; offset < days; offset++) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return dates;
 }
 
 async function touchClient(supabase: any, patch: Record<string, unknown> = {}) {
@@ -412,14 +437,25 @@ function jobContract(provider: string) {
   return {
     metrics: [{
       product_slug: "계정에 속한 제품 slug",
-      wing: { visits: "정수", orders: "정수", revenue: "정수" },
-      growth: { visits: "정수", orders: "정수", revenue: "정수" },
+      wing: {
+        visits: "정수",
+        orders: "정수",
+        revenue: "정수",
+        conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
+      },
+      growth: {
+        visits: "정수",
+        orders: "정수",
+        revenue: "정수",
+        conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
+      },
     }],
     source_totals: {
       combined: {
         visits: "공식 방문자 카드",
         orders: "공식 판매량 카드",
         revenue: "공식 매출 카드",
+        conversion_rate: "공식 전체 구매전환율(%), 표시되지 않으면 생략",
       },
     },
   };
@@ -435,7 +471,7 @@ function publicJob(job: Record<string, unknown>) {
     status: job.status,
     attempts: job.attempts,
     source_url: (SOURCE_URLS as Record<string, string>)[provider],
-    available_after_kst: provider === "coupang" ? "12:40" : "09:50",
+    available_after_kst: provider === "coupang" ? "12:40" : "09:30",
     navigation_note: provider === "coupang"
       ? "비밀번호 변경 화면이면 변경하지 말고 같은 세션에서 https://wing.coupang.com 을 먼저 연 뒤 source_url을 다시 연다."
       : "스토어분석에서 전일 기준 제품별 방문수·상품결제건수와 판매수량·결제금액을 모두 읽는다.",
@@ -450,7 +486,7 @@ async function syncJobs(supabase: any, metricDate: string) {
   const missingTasks = deriveMissingTasks(data.metricsBySlug, metricDate);
   const readyKeys = new Set(
     missingTasks
-      .filter((task) => providerReadyAt(task.provider))
+      .filter((task) => providerReadyAt(task.provider, metricDate))
       .map((task) => `${task.provider}:${task.account}`),
   );
   const { data: existingRows, error: existingError } = await supabase
@@ -565,6 +601,26 @@ async function syncJobs(supabase: any, metricDate: string) {
   };
 }
 
+async function syncBacklog(supabase: any) {
+  const results = [];
+  for (const metricDate of kstBacklogDates()) {
+    results.push(await syncJobs(supabase, metricDate));
+  }
+  const [latest, ...older] = results;
+  return {
+    ...latest,
+    jobs: results.flatMap((result) => result.jobs),
+    deferred_jobs: results.flatMap((result) => result.deferred_jobs),
+    blocked_jobs: results.flatMap((result) => result.blocked_jobs),
+    backlog: older.map((result) => ({
+      metric_date: result.metric_date,
+      actionable_jobs: result.jobs.length,
+      deferred_jobs: result.deferred_jobs.length,
+      blocked_jobs: result.blocked_jobs.length,
+    })),
+  };
+}
+
 async function recoveryPlan(supabase: any, metricDate: string) {
   const data = await loadData(supabase, metricDate);
   return {
@@ -572,8 +628,8 @@ async function recoveryPlan(supabase: any, metricDate: string) {
     missing_tasks: deriveMissingTasks(data.metricsBySlug, metricDate).map(
       (task) => ({
         ...task,
-        provider_ready: providerReadyAt(task.provider),
-        available_after_kst: task.provider === "coupang" ? "12:40" : "09:50",
+        provider_ready: providerReadyAt(task.provider, metricDate),
+        available_after_kst: task.provider === "coupang" ? "12:40" : "09:30",
       }),
     ),
     dashboard_snapshot: buildDashboardSnapshot(metricDate, data),
@@ -718,6 +774,36 @@ async function submitJob(supabase: any, body: Record<string, unknown>) {
     );
     if (salesError) throw new Error(salesError.message);
   }
+  if (job.provider === "coupang") {
+    for (const rawMetric of normalized.metrics) {
+      const metric = rawMetric as Record<string, any>;
+      const wingVisits = Number(metric.wing.visits) || 0;
+      const growthVisits = Number(metric.growth.visits) || 0;
+      const totalVisits = wingVisits + growthVisits;
+      const combinedRate = totalVisits > 0
+        ? (
+          Number(metric.wing.conversion_rate) * wingVisits +
+          Number(metric.growth.conversion_rate) * growthVisits
+        ) / totalVisits
+        : 0;
+      const { error: conversionError } = await supabase.rpc(
+        "merge_daily_coupang_conversion",
+        {
+          p_product_slug: metric.product_slug,
+          p_metric_date: job.metric_date,
+          p_wing_rate: metric.wing.conversion_rate,
+          p_growth_rate: metric.growth.conversion_rate,
+          p_combined_rate: Number(combinedRate.toFixed(4)),
+          p_source_details: {
+            wing_source: metric.wing.conversion_source,
+            growth_source: metric.growth.conversion_source,
+            bridge_job_id: job.id,
+          },
+        },
+      );
+      if (conversionError) throw new Error(conversionError.message);
+    }
+  }
   const { data: result, error } = await supabase.rpc(
     "accept_grok_bridge_submission",
     {
@@ -801,7 +887,9 @@ Deno.serve(async (request) => {
         ok: true,
         client_key: CLIENT_KEY,
         runbook: operatorRunbook(),
-        initial_sync: await syncJobs(supabase, metricDate),
+        initial_sync: body.metric_date === undefined
+          ? await syncBacklog(supabase)
+          : await syncJobs(supabase, metricDate),
       });
     }
     if (action === "status") {
@@ -819,7 +907,9 @@ Deno.serve(async (request) => {
       await touchClient(supabase);
       return responseJson({
         ok: true,
-        ...(await syncJobs(supabase, metricDate)),
+        ...(body.metric_date === undefined
+          ? await syncBacklog(supabase)
+          : await syncJobs(supabase, metricDate)),
       });
     }
     if (action === "claim") {

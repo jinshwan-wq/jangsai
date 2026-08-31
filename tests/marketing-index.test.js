@@ -162,6 +162,78 @@ assert.equal(smartstoreAnalytics.orders, 30, '총판매량에는 스마트스토
 assert.equal(smartstoreAnalytics.attributableOrders, 5, '스마트스토어 전환 분자에는 상품결제건수를 사용한다');
 assert.equal(smartstoreAnalytics.salesComplete, false, '일부 채널 판매량만 있으면 전체 판매량을 미완성으로 표시한다');
 assert.equal(smartstoreAnalytics.revenueComplete, false, '일부 채널 매출만 있으면 전체 매출을 미완성으로 표시한다');
+assert.equal(
+    vm.runInContext(`getChannelConversionMeasurement({
+        smartstore_visits: 100,
+        smartstore_pay_count: 7,
+        smartstore_conversion_rate: 6.8,
+        data_completeness: {
+            smartstore_visits: true,
+            smartstore_pay_count: true,
+            smartstore_conversion_rate: true
+        }
+    }, 'smartstore').rate`, context),
+    6.8,
+    '스마트스토어는 화면의 공식 구매전환율을 우선 표시한다'
+);
+assert.deepEqual(
+    JSON.parse(JSON.stringify(vm.runInContext(`getChannelConversionMeasurement({
+        cafe24_visits: 100,
+        cafe24_purchase_count: 4,
+        cafe24_conversion_rate: 4,
+        cafe24_orders: 12,
+        data_completeness: {
+            cafe24_visits: true,
+            cafe24_purchase_count: true,
+            cafe24_conversion_rate: true,
+            cafe24_orders: true
+        }
+    }, 'cafe24')`, context))),
+    {
+        visits: 100,
+        purchases: 4,
+        rate: 4,
+        basis: 'Cafe24 공식 상품조회·판매건 기준'
+    },
+    '자사몰 전환율은 판매수량 대신 Cafe24 공식 판매건수를 사용한다'
+);
+assert.equal(
+    vm.runInContext(`getChannelConversionMeasurement({
+        coupang_wing_visits: 70,
+        coupang_wing_orders: 7,
+        coupang_growth_visits: 30,
+        coupang_growth_orders: 3,
+        coupang_conversion_rate: 8.4,
+        data_completeness: {
+            coupang_wing_visits: true,
+            coupang_wing_orders: true,
+            coupang_growth_visits: true,
+            coupang_growth_orders: true,
+            coupang_conversion_rate: true
+        }
+    }, 'coupang').rate`, context),
+    8.4,
+    '쿠팡은 Wing 화면의 공식 구매전환율을 우선 표시한다'
+);
+
+const weightedConversion = vm.runInContext(`(() => {
+    state.marketingMetrics = [
+        {
+            product_id: 'gala', metric_date: '2026-08-29',
+            cafe24_visits: 100, cafe24_orders: 10,
+            data_completeness: { cafe24_visits: true, cafe24_orders: true }
+        },
+        {
+            product_id: 'gala', metric_date: '2026-08-30',
+            cafe24_visits: 300, cafe24_orders: 15,
+            data_completeness: { cafe24_visits: true, cafe24_orders: true }
+        }
+    ];
+    return getChannelConversionSummary(new Set(['gala']), 'cafe24', '2026-08-30');
+})()`, context);
+assert.equal(weightedConversion.current.rate, 5, '당일 자사몰 전환율을 계산한다');
+assert.equal(weightedConversion.average.rate, 6.25, '최근 7일 전환율은 방문수 가중 평균으로 계산한다');
+assert.equal(weightedConversion.previous.rate, 10, '전일 전환율을 함께 제공한다');
 
 const brandAdSpend = vm.runInContext(`(() => {
     state.marketingProducts = [
@@ -304,6 +376,12 @@ assert.match(funnelHtml, /전체 구매<\/span><strong>—<\/strong>/, '불완�
 assert.match(funnelHtml, /전체 매출<\/span><strong>—<\/strong>/, '불완전 매출을 전체 매출로 표시하지 않는다');
 assert.match(funnelHtml, /총 매출<\/span><strong>—<\/strong>/, '불완전 매출을 KPI 총매출로 표시하지 않는다');
 assert.match(funnelHtml, /ROAS<\/span><strong>—<\/strong>/, '매출 또는 광고비가 불완전하면 ROAS를 계산하지 않는다');
+const overviewHtml = vm.runInContext('renderOverviewDashboardView()', context);
+assert.match(overviewHtml, /서버 자동수집/);
+assert.match(overviewHtml, /Grok 자동수집/);
+assert.match(overviewHtml, /채널별 구매 전환율/);
+assert.match(overviewHtml, /4개 제품 통합 비교/);
+assert.match(overviewHtml, /자사몰[\s\S]*스마트스토어[\s\S]*쿠팡/);
 const expectedMetricDate = vm.runInContext('kstDateString(-1)', context);
 const bridgeFailureHtml = vm.runInContext(`(() => {
     state.marketingBridgeClients = [{
@@ -339,7 +417,7 @@ assert.equal(
 );
 const reportTableHtml = vm.runInContext('renderDailyReportTable(state.marketingProducts[0])', context);
 assert.match(reportTableHtml, /테스트상품 블로그 방문자 수\(조회수\)/);
-assert.match(reportTableHtml, /스마트스토어 구매전환율[\s\S]*5\.3%/);
+assert.match(reportTableHtml, /스마트스토어 전환율[\s\S]*5\.3%/);
 assert.match(reportTableHtml, /테스트상품 일 광고비[\s\S]*1,000원/);
 assert.match(reportTableHtml, /테스트상품 월 누적 광고비[\s\S]*1,000원/);
 assert.equal(
@@ -384,9 +462,12 @@ assert.match(
             coupang_wing_visits: 0,
             coupang_wing_orders: 0,
             coupang_wing_revenue: 0,
+            coupang_wing_conversion_rate: 0,
             coupang_growth_visits: 0,
             coupang_growth_orders: 0,
             coupang_growth_revenue: 0,
+            coupang_growth_conversion_rate: 0,
+            coupang_conversion_rate: 0,
             data_completeness: {
                 smartstore_visits: true,
                 smartstore_pay_count: true,
@@ -396,15 +477,18 @@ assert.match(
                 coupang_wing_visits: true,
                 coupang_wing_orders: true,
                 coupang_wing_revenue: true,
+                coupang_wing_conversion_rate: true,
                 coupang_growth_visits: true,
                 coupang_growth_orders: true,
-                coupang_growth_revenue: true
+                coupang_growth_revenue: true,
+                coupang_growth_conversion_rate: true,
+                coupang_conversion_rate: true
             }
         }));
         state.marketingBridgeClients = [{
             client_key: 'grok-marketing-ops',
             last_seen_at: new Date().toISOString(),
-            details: { runbook_version: 6 }
+            details: { runbook_version: 7 }
         }];
         state.marketingBridgeJobs = [
             { metric_date: '${expectedMetricDate}', provider: 'smartstore', account: 'innerium', status: 'completed' },

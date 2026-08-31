@@ -15,9 +15,14 @@ test('Bridge 날짜는 KST 기준 최근 과거 날짜만 허용한다', async (
 
 test('쿠팡 전일 유입은 KST 12시 40분 이후에만 수집한다', async () => {
   const { providerReadyAt } = await contractPromise;
-  assert.equal(providerReadyAt('smartstore', new Date('2026-08-29T00:00:00Z')), true);
-  assert.equal(providerReadyAt('coupang', new Date('2026-08-29T03:39:59Z')), false);
-  assert.equal(providerReadyAt('coupang', new Date('2026-08-29T03:40:00Z')), true);
+  assert.equal(providerReadyAt('smartstore', '2026-08-28', new Date('2026-08-29T00:00:00Z')), true);
+  assert.equal(providerReadyAt('coupang', '2026-08-28', new Date('2026-08-29T03:39:59Z')), false);
+  assert.equal(providerReadyAt('coupang', '2026-08-28', new Date('2026-08-29T03:40:00Z')), true);
+  assert.equal(
+    providerReadyAt('coupang', '2026-08-27', new Date('2026-08-29T00:00:00Z')),
+    true,
+    '과거 누락일 쿠팡은 오전에도 즉시 복구한다'
+  );
 });
 
 test('Bridge 오류는 즉시 반복하지 않고 로그인 오류를 차단 상태로 보존한다', async () => {
@@ -63,9 +68,12 @@ test('완성도 표시가 없는 로그인 채널만 계정별 작업으로 만�
       coupang_wing_visits: true,
       coupang_wing_orders: true,
       coupang_wing_revenue: true,
+      coupang_wing_conversion_rate: true,
       coupang_growth_visits: true,
       coupang_growth_orders: true,
       coupang_growth_revenue: true,
+      coupang_growth_conversion_rate: true,
+      coupang_conversion_rate: true,
     },
   };
   const tasks = deriveMissingTasks(new Map([
@@ -138,7 +146,11 @@ test('쿠팡 반품 음수는 허용하되 공식 전체 합계를 강제한다'
   const totals = {
     combined: { visits: 42, orders: 2, revenue: 50000 },
   };
-  assert.deepEqual(normalizeCoupangSubmission('yural', metrics, totals).source_totals, totals);
+  const result = normalizeCoupangSubmission('yural', metrics, totals);
+  assert.equal(result.source_totals.combined.visits, 42);
+  assert.equal(result.metrics[0].wing.orders, -1);
+  assert.equal(result.metrics[0].growth.conversion_rate, 10);
+  assert.equal(result.metrics[0].growth.conversion_source, 'derived_from_official_counts');
   assert.throws(
     () => normalizeCoupangSubmission('yural', metrics, {
       combined: { ...totals.combined, visits: 43 },

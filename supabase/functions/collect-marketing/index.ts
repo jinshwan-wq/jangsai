@@ -45,6 +45,8 @@ const ALLOWED_METRICS = new Set([
   "content_views",
   "keyword_search_volume",
   "cafe24_visits",
+  "cafe24_purchase_count",
+  "cafe24_conversion_rate",
   "smartstore_visits",
   "coupang_visits",
   "coupang_wing_visits",
@@ -750,6 +752,49 @@ async function collectCafe24ProductViews(
   return views;
 }
 
+async function collectCafe24ProductPurchases(
+  mallId: string,
+  productNos: Set<string>,
+  metricDate: string,
+  tokenRef: { value: string },
+  supabase: any,
+) {
+  let offset = 0;
+  let purchaseCount = 0;
+  const found = new Set<string>();
+  while (offset <= 15_000) {
+    const url = new URL("https://ca-api.cafe24data.com/products/sales");
+    url.searchParams.set("mall_id", mallId);
+    url.searchParams.set("shop_no", "1");
+    url.searchParams.set("start_date", metricDate);
+    url.searchParams.set("end_date", metricDate);
+    url.searchParams.set("device_type", "total");
+    url.searchParams.set("timezone", "Asia/Seoul");
+    url.searchParams.set("limit", "1000");
+    url.searchParams.set("offset", String(offset));
+    const response = await fetchCafe24Get(url, mallId, supabase, tokenRef);
+    if (!response.ok) {
+      console.warn(
+        `${mallId} Cafe24 상품 판매건 응답 오류 (${response.status})`,
+      );
+      return null;
+    }
+    const payload = await response.json();
+    const records = findRecordArray(payload, "product_no");
+    for (const record of records) {
+      const productNo = String(record.product_no);
+      if (!productNos.has(productNo) || found.has(productNo)) continue;
+      found.add(productNo);
+      purchaseCount += Math.max(0, numericValue(record.order_count) || 0);
+    }
+    if (found.size === productNos.size || records.length < 1000) {
+      return purchaseCount;
+    }
+    offset += 1000;
+  }
+  return purchaseCount;
+}
+
 async function collectCafe24(
   mapping: Mapping,
   metricDate: string,
@@ -817,6 +862,35 @@ async function collectCafe24(
     tokenRef,
     supabase,
   );
+  const purchaseCount = await collectCafe24ProductPurchases(
+    mallId,
+    productNos,
+    metricDate,
+    tokenRef,
+    supabase,
+  );
+  if (visits !== null && purchaseCount !== null) {
+    const { error: conversionError } = await supabase.rpc(
+      "merge_daily_cafe24_conversion",
+      {
+        p_product_id: mapping.product_id,
+        p_metric_date: metricDate,
+        p_visits: Math.round(visits),
+        p_purchase_count: Math.round(purchaseCount),
+        p_source_details: {
+          collector: "cafe24_analytics",
+          visit_endpoint: "products/view",
+          purchase_endpoint: "products/sales",
+          product_nos: [...productNos],
+        },
+      },
+    );
+    if (conversionError) {
+      throw new Error(
+        `${mallId} Cafe24 전환율 저장 실패: ${conversionError.message}`,
+      );
+    }
+  }
   const metrics: MetricPatch = {
     cafe24_orders: Math.round(salesQuantity),
     cafe24_revenue: Math.round(revenue),
@@ -824,12 +898,31 @@ async function collectCafe24(
       cafe24_orders: true,
       cafe24_revenue: true,
       ...(visits === null ? {} : { cafe24_visits: true }),
+      ...(purchaseCount === null
+        ? {}
+        : {
+          cafe24_purchase_count: true,
+          cafe24_conversion_rate: visits !== null,
+        }),
     },
   };
   if (visits !== null) metrics.cafe24_visits = Math.round(visits);
+  if (purchaseCount !== null) {
+    metrics.cafe24_purchase_count = Math.round(purchaseCount);
+    if (visits !== null) {
+      metrics.cafe24_conversion_rate = visits > 0
+        ? Number(((purchaseCount / visits) * 100).toFixed(4))
+        : 0;
+    }
+  }
   return {
     metrics,
-    warnings: visits === null ? [`${mallId} Cafe24 상품 방문수 수집 실패`] : [],
+    warnings: [
+      ...(visits === null ? [`${mallId} Cafe24 상품 방문수 수집 실패`] : []),
+      ...(purchaseCount === null
+        ? [`${mallId} Cafe24 상품 판매건수 수집 실패`]
+        : []),
+    ],
   };
 }
 
