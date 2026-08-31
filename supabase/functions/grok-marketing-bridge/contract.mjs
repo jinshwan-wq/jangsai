@@ -94,6 +94,8 @@ export function providerReadyAt(provider, metricDate = kstYesterday(), now = new
   if (provider !== 'coupang') return true;
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const kstToday = kst.toISOString().slice(0, 10);
+  // same-day hourly realtime collect — always actionable regardless of settlement window
+  if (metricDate === kstToday) return true;
   const yesterday = new Date(`${kstToday}T00:00:00Z`);
   yesterday.setUTCDate(yesterday.getUTCDate() - 1);
   if (metricDate < yesterday.toISOString().slice(0, 10)) return true;

@@ -24,6 +24,11 @@ test('쿠팡 전일 유입은 KST 12시 40분 이후에만 수집한다', async 
     true,
     '과거 누락일 쿠팡은 오전에도 즉시 복구한다'
   );
+  assert.equal(
+    providerReadyAt('coupang', '2026-08-29', new Date('2026-08-29T00:00:00Z')),
+    true,
+    '당일(KST) 실시간 수집은 정산 창과 무관하게 즉시 실행'
+  );
 });
 
 test('Bridge 오류는 즉시 반복하지 않고 로그인 오류를 차단 상태로 보존한다', async () => {
