@@ -99,9 +99,29 @@ const state = {
     reportPeriod: '3d',
     marketingDataReady: true,
     marketingLastRefreshedAt: null,
+    // 업무일지 & 통합보고
+    workLogs: [],
+    worklogSelectedPerson: null,
+    worklogDateFrom: null,
+    worklogDateTo: null,
+    reportSelectedDate: null,
+    reportMode: 'daily',
 };
 let marketingRefreshTimer = null;
 let marketingRefreshInFlight = false;
+
+const STAFF_ROSTER = [
+    { key: 'wang-dahyun',   name: '왕다현 대리' },
+    { key: 'lim-seyeon',    name: '임세연 대리' },
+    { key: 'eun-minho',     name: '은민호 주임' },
+    { key: 'kang-jaeyun',   name: '강재윤 주임' },
+    { key: 'park-hayeon',   name: '박하연' },
+    { key: 'lee-bora',      name: '이보라' },
+    { key: 'lee-minwook',   name: '이민욱 주임' },
+    { key: 'hong-yujin',    name: '홍유진 주임' },
+    { key: 'lim-seoyun',    name: '임서윤 주임' },
+    { key: 'lee-minjeong',  name: '이민정' },
+];
 
 // ==========================================
 // 유틸리티 함수
@@ -305,6 +325,17 @@ async function loadPagedMarketingRows(queryFactory, pageSize = 1000, maxRows = 1
         if ((data || []).length < pageSize) return { data: rows, error: null };
     }
     return { data: null, error: new Error(`마케팅 데이터가 ${maxRows.toLocaleString('ko-KR')}건을 초과했습니다.`) };
+}
+
+async function loadWorkLogs(personKey, dateFrom, dateTo) {
+    let query = sb.from('work_logs').select('*');
+    if (personKey) query = query.eq('person_key', personKey);
+    if (dateFrom) query = query.gte('log_date', dateFrom);
+    if (dateTo) query = query.lte('log_date', dateTo);
+    query = query.order('log_date', { ascending: false }).limit(200);
+    const { data, error } = await query;
+    if (error) { showToast('업무일지 로드 실패: ' + error.message, 'error'); return []; }
+    return data || [];
 }
 
 async function loadMarketingData() {
@@ -769,6 +800,12 @@ function renderNavbar() {
                 <i class="ri-apps-line"></i> 프로그램
             </button>` : ''}
             ${isAdmin ? `
+            <button class="btn btn-sm ${state.currentView === 'worklog' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('worklog')" id="nav-worklog-btn">
+                <i class="ri-file-list-3-line"></i> 업무일지
+            </button>
+            <button class="btn btn-sm ${state.currentView === 'report' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('report')" id="nav-report-btn">
+                <i class="ri-bar-chart-grouped-line"></i> 통합보고
+            </button>
             <button class="btn btn-sm ${state.currentView === 'admin' ? 'btn-primary' : 'btn-secondary'}" onclick="navigate('admin')" id="nav-admin-btn">
                 <i class="ri-settings-3-line"></i> 관리자
             </button>` : ''}
@@ -3765,6 +3802,380 @@ async function handleDeleteProgram(programId) {
 }
 
 // ==========================================
+// 업무일지 뷰
+// ==========================================
+
+function renderWorklogView() {
+    if (state.worklogSelectedPerson) {
+        return renderWorklogDetail();
+    }
+    return renderWorklogStaffList();
+}
+
+function renderWorklogStaffList() {
+    const today = kstDateString(0);
+    const staffCards = STAFF_ROSTER.map(person => {
+        const todayLog = state.workLogs.find(l => l.person_key === person.key && l.log_date === today);
+        const hasLog = todayLog && (todayLog.work.trim() || todayLog.notes.trim() || todayLog.pending.trim());
+        return `
+        <div class="worklog-person-card" onclick="selectWorklogPerson('${person.key}')">
+            <div class="worklog-person-avatar">${escapeHtml(person.name[0])}</div>
+            <div class="worklog-person-info">
+                <div class="worklog-person-name">${escapeHtml(person.name)}</div>
+                <div class="worklog-person-status ${hasLog ? 'has-log' : 'no-log'}">
+                    <i class="${hasLog ? 'ri-checkbox-circle-line' : 'ri-time-line'}"></i>
+                    ${hasLog ? '오늘 작성됨' : '작성 없음'}
+                </div>
+            </div>
+            <i class="ri-arrow-right-s-line worklog-person-arrow"></i>
+        </div>`;
+    }).join('');
+
+    return `
+    ${renderNavbar()}
+    <div class="admin">
+        <div class="admin-header">
+            <h1 class="admin-title"><i class="ri-file-list-3-line"></i> 업무일지</h1>
+            <p class="admin-subtitle">직원별 일일 업무 기록을 확인합니다</p>
+        </div>
+        <div class="worklog-staff-grid">
+            ${staffCards}
+        </div>
+    </div>`;
+}
+
+async function selectWorklogPerson(personKey) {
+    state.worklogSelectedPerson = personKey;
+    state.workLogs = await loadWorkLogs(personKey);
+    renderApp();
+}
+
+function clearWorklogPerson() {
+    state.worklogSelectedPerson = null;
+    state.workLogs = [];
+    renderApp();
+}
+
+function renderWorklogDetail() {
+    const person = STAFF_ROSTER.find(p => p.key === state.worklogSelectedPerson);
+    if (!person) return renderWorklogStaffList();
+
+    const logs = state.workLogs.filter(l => l.person_key === person.key);
+    const today = kstDateString(0);
+    const dates = [];
+    for (let i = 0; i < 30; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        dates.push(d.toISOString().slice(0, 10));
+    }
+
+    const logRows = dates.map(date => {
+        const log = logs.find(l => l.log_date === date);
+        const dayLabel = new Date(date + 'T00:00:00').toLocaleDateString('ko-KR', {
+            month: 'short', day: 'numeric', weekday: 'short'
+        });
+        const isToday = date === today;
+
+        if (!log || (!log.work.trim() && !log.notes.trim() && !log.pending.trim())) {
+            return `
+            <div class="worklog-day ${isToday ? 'worklog-today' : ''}">
+                <div class="worklog-day-header">
+                    <span class="worklog-day-date">${dayLabel}</span>
+                    ${isToday ? '<span class="worklog-badge-today">오늘</span>' : ''}
+                    <span class="worklog-badge-empty">작성 없음</span>
+                </div>
+            </div>`;
+        }
+
+        return `
+        <div class="worklog-day ${isToday ? 'worklog-today' : ''}">
+            <div class="worklog-day-header">
+                <span class="worklog-day-date">${dayLabel}</span>
+                ${isToday ? '<span class="worklog-badge-today">오늘</span>' : ''}
+            </div>
+            ${log.work.trim() ? `
+            <div class="worklog-section">
+                <div class="worklog-section-title"><i class="ri-briefcase-line"></i> 금일 업무사항</div>
+                <div class="worklog-section-body">${escapeHtml(log.work).replace(/\n/g, '<br>')}</div>
+            </div>` : ''}
+            ${log.notes.trim() ? `
+            <div class="worklog-section">
+                <div class="worklog-section-title"><i class="ri-alert-line"></i> 특이사항</div>
+                <div class="worklog-section-body">${escapeHtml(log.notes).replace(/\n/g, '<br>')}</div>
+            </div>` : ''}
+            ${log.pending.trim() ? `
+            <div class="worklog-section">
+                <div class="worklog-section-title"><i class="ri-time-line"></i> 단기미결</div>
+                <div class="worklog-section-body">${escapeHtml(log.pending).replace(/\n/g, '<br>')}</div>
+            </div>` : ''}
+            <div class="worklog-meta">
+                ${log.source ? `<span>출처: ${escapeHtml(log.source)}</span>` : ''}
+                ${log.updated_at ? `<span>업데이트: ${formatDateTime(log.updated_at)}</span>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+
+    return `
+    ${renderNavbar()}
+    <div class="admin">
+        <div class="admin-header">
+            <button class="btn btn-ghost btn-sm" onclick="clearWorklogPerson()" style="margin-bottom:12px">
+                <i class="ri-arrow-left-line"></i> 직원 목록
+            </button>
+            <h1 class="admin-title"><i class="ri-user-line"></i> ${escapeHtml(person.name)} 업무일지</h1>
+            <p class="admin-subtitle">최근 30일 업무 기록</p>
+        </div>
+        <div class="worklog-timeline">
+            ${logRows}
+        </div>
+    </div>`;
+}
+
+// ==========================================
+// 통합보고 뷰
+// ==========================================
+
+function renderReportView() {
+    const selectedDate = state.reportSelectedDate || kstDateString(0);
+    const isWeekly = state.reportMode === 'weekly';
+
+    let dateRange;
+    if (isWeekly) {
+        const start = new Date(selectedDate + 'T00:00:00');
+        const dayOfWeek = start.getDay();
+        const monday = new Date(start);
+        monday.setDate(start.getDate() - ((dayOfWeek + 6) % 7));
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        dateRange = {
+            from: monday.toISOString().slice(0, 10),
+            to: sunday.toISOString().slice(0, 10),
+            label: `${monday.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })} ~ ${sunday.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })}`
+        };
+    } else {
+        const dateObj = new Date(selectedDate + 'T00:00:00');
+        dateRange = {
+            from: selectedDate,
+            to: selectedDate,
+            label: dateObj.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
+        };
+    }
+
+    const staffSections = STAFF_ROSTER.map(person => {
+        const personLogs = state.workLogs.filter(l => l.person_key === person.key);
+        if (personLogs.length === 0) {
+            return `
+            <div class="report-person-block">
+                <div class="report-person-name"><i class="ri-user-line"></i> ${escapeHtml(person.name)}</div>
+                <div class="report-empty">작성 없음</div>
+            </div>`;
+        }
+
+        const logCards = personLogs.map(log => {
+            const hasContent = log.work.trim() || log.notes.trim() || log.pending.trim();
+            if (!hasContent) {
+                return `<div class="report-log-date">${log.log_date} — 작성 없음</div>`;
+            }
+            return `
+            <div class="report-log-entry">
+                ${isWeekly ? `<div class="report-log-date">${new Date(log.log_date + 'T00:00:00').toLocaleDateString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short' })}</div>` : ''}
+                ${log.work.trim() ? `<div class="worklog-section"><div class="worklog-section-title"><i class="ri-briefcase-line"></i> 금일 업무사항</div><div class="worklog-section-body">${escapeHtml(log.work).replace(/\n/g, '<br>')}</div></div>` : ''}
+                ${log.notes.trim() ? `<div class="worklog-section"><div class="worklog-section-title"><i class="ri-alert-line"></i> 특이사항</div><div class="worklog-section-body">${escapeHtml(log.notes).replace(/\n/g, '<br>')}</div></div>` : ''}
+                ${log.pending.trim() ? `<div class="worklog-section"><div class="worklog-section-title"><i class="ri-time-line"></i> 단기미결</div><div class="worklog-section-body">${escapeHtml(log.pending).replace(/\n/g, '<br>')}</div></div>` : ''}
+            </div>`;
+        }).join('');
+
+        return `
+        <div class="report-person-block">
+            <div class="report-person-name"><i class="ri-user-line"></i> ${escapeHtml(person.name)}</div>
+            ${logCards}
+        </div>`;
+    }).join('');
+
+    const salesSnapshot = renderReportSalesSnapshot(dateRange);
+
+    return `
+    ${renderNavbar()}
+    <div class="admin">
+        <div class="admin-header">
+            <h1 class="admin-title"><i class="ri-bar-chart-grouped-line"></i> 통합보고</h1>
+            <p class="admin-subtitle">전 직원 업무 현황과 매출 요약을 한눈에 확인합니다</p>
+        </div>
+
+        <div class="report-controls">
+            <div class="report-mode-switch">
+                <button class="btn btn-sm ${!isWeekly ? 'btn-primary' : 'btn-secondary'}" onclick="setReportMode('daily')">일간</button>
+                <button class="btn btn-sm ${isWeekly ? 'btn-primary' : 'btn-secondary'}" onclick="setReportMode('weekly')">주간</button>
+            </div>
+            <div class="report-date-picker">
+                <input type="date" class="report-date-input" value="${selectedDate}" onchange="changeReportDate(this.value)" max="${kstDateString(0)}">
+            </div>
+            <div class="report-date-label">${dateRange.label}</div>
+        </div>
+
+        <div class="report-section-header">
+            <h2><i class="ri-team-line"></i> 직원별 업무 현황</h2>
+        </div>
+        <div class="report-staff-list">
+            ${staffSections}
+        </div>
+
+        ${salesSnapshot}
+    </div>`;
+}
+
+function renderReportSalesSnapshot(dateRange) {
+    if (!state.marketingMetrics || state.marketingMetrics.length === 0) {
+        return `
+        <div class="report-section-header" style="margin-top:32px">
+            <h2><i class="ri-shopping-bag-line"></i> 매출 현황</h2>
+        </div>
+        <div class="report-sales-empty">
+            <i class="ri-information-line"></i> 해당 기간의 매출 데이터가 없습니다.
+        </div>`;
+    }
+
+    const metricsInRange = state.marketingMetrics.filter(m =>
+        m.metric_date >= dateRange.from && m.metric_date <= dateRange.to
+    );
+
+    if (metricsInRange.length === 0) {
+        return `
+        <div class="report-section-header" style="margin-top:32px">
+            <h2><i class="ri-shopping-bag-line"></i> 매출 현황</h2>
+        </div>
+        <div class="report-sales-empty">
+            <i class="ri-information-line"></i> ${dateRange.label} 기간의 수집된 매출 데이터가 없습니다.
+        </div>`;
+    }
+
+    const productSummaries = {};
+    for (const metric of metricsInRange) {
+        const product = state.marketingProducts.find(p => p.id === metric.product_id);
+        const productName = product ? `${product.brand} ${product.name}` : metric.product_id;
+        if (!productSummaries[metric.product_id]) {
+            productSummaries[metric.product_id] = {
+                name: productName,
+                brand: product?.brand || '',
+                ss_orders: 0, ss_revenue: 0,
+                cp_orders: 0, cp_revenue: 0,
+                c24_orders: 0, c24_revenue: 0,
+                total_orders: 0, total_revenue: 0,
+                days: 0
+            };
+        }
+        const s = productSummaries[metric.product_id];
+        s.ss_orders  += metricNumber(metric.smartstore_orders);
+        s.ss_revenue += metricNumber(metric.smartstore_revenue);
+        s.cp_orders  += getCoupangMetric(metric, 'orders');
+        s.cp_revenue += getCoupangMetric(metric, 'revenue');
+        s.c24_orders += metricNumber(metric.cafe24_orders);
+        s.c24_revenue += metricNumber(metric.cafe24_revenue);
+        s.total_orders += getMetricSales(metric);
+        s.total_revenue += getMetricRevenue(metric);
+        s.days++;
+    }
+
+    const rows = Object.values(productSummaries).map(s => `
+        <tr>
+            <td class="report-product-cell">
+                <span class="report-brand">${escapeHtml(s.brand)}</span>
+                ${escapeHtml(s.name)}
+            </td>
+            <td class="num">${formatMetric(s.ss_orders)}</td>
+            <td class="num">${formatWon(s.ss_revenue)}</td>
+            <td class="num">${formatMetric(s.cp_orders)}</td>
+            <td class="num">${formatWon(s.cp_revenue)}</td>
+            <td class="num">${formatMetric(s.c24_orders)}</td>
+            <td class="num">${formatWon(s.c24_revenue)}</td>
+            <td class="num total">${formatMetric(s.total_orders)}</td>
+            <td class="num total">${formatWon(s.total_revenue)}</td>
+        </tr>
+    `).join('');
+
+    const grandTotals = Object.values(productSummaries).reduce((acc, s) => ({
+        ss_orders: acc.ss_orders + s.ss_orders,
+        ss_revenue: acc.ss_revenue + s.ss_revenue,
+        cp_orders: acc.cp_orders + s.cp_orders,
+        cp_revenue: acc.cp_revenue + s.cp_revenue,
+        c24_orders: acc.c24_orders + s.c24_orders,
+        c24_revenue: acc.c24_revenue + s.c24_revenue,
+        total_orders: acc.total_orders + s.total_orders,
+        total_revenue: acc.total_revenue + s.total_revenue,
+    }), { ss_orders: 0, ss_revenue: 0, cp_orders: 0, cp_revenue: 0, c24_orders: 0, c24_revenue: 0, total_orders: 0, total_revenue: 0 });
+
+    return `
+    <div class="report-section-header" style="margin-top:32px">
+        <h2><i class="ri-shopping-bag-line"></i> 매출 현황 — ${dateRange.label}</h2>
+    </div>
+    <div class="report-sales-table-wrap">
+        <table class="report-sales-table">
+            <thead>
+                <tr>
+                    <th rowspan="2">제품</th>
+                    <th colspan="2">스마트스토어</th>
+                    <th colspan="2">쿠팡</th>
+                    <th colspan="2">자사몰</th>
+                    <th colspan="2">합계</th>
+                </tr>
+                <tr>
+                    <th>주문</th><th>매출</th>
+                    <th>주문</th><th>매출</th>
+                    <th>주문</th><th>매출</th>
+                    <th>주문</th><th>매출</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows}
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td><strong>전체 합계</strong></td>
+                    <td class="num">${formatMetric(grandTotals.ss_orders)}</td>
+                    <td class="num">${formatWon(grandTotals.ss_revenue)}</td>
+                    <td class="num">${formatMetric(grandTotals.cp_orders)}</td>
+                    <td class="num">${formatWon(grandTotals.cp_revenue)}</td>
+                    <td class="num">${formatMetric(grandTotals.c24_orders)}</td>
+                    <td class="num">${formatWon(grandTotals.c24_revenue)}</td>
+                    <td class="num total">${formatMetric(grandTotals.total_orders)}</td>
+                    <td class="num total">${formatWon(grandTotals.total_revenue)}</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>`;
+}
+
+async function setReportMode(mode) {
+    state.reportMode = mode;
+    await navigateReport();
+}
+
+async function changeReportDate(date) {
+    state.reportSelectedDate = date;
+    await navigateReport();
+}
+
+async function navigateReport() {
+    const selectedDate = state.reportSelectedDate || kstDateString(0);
+    let dateFrom = selectedDate;
+    let dateTo = selectedDate;
+
+    if (state.reportMode === 'weekly') {
+        const start = new Date(selectedDate + 'T00:00:00');
+        const dayOfWeek = start.getDay();
+        const monday = new Date(start);
+        monday.setDate(start.getDate() - ((dayOfWeek + 6) % 7));
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        dateFrom = monday.toISOString().slice(0, 10);
+        dateTo = sunday.toISOString().slice(0, 10);
+    }
+
+    state.workLogs = await loadWorkLogs(null, dateFrom, dateTo);
+    renderApp();
+}
+
+// ==========================================
 // 메인 라우터 & 렌더링
 // ==========================================
 
@@ -3795,6 +4206,28 @@ async function navigate(view) {
         await loadRoles();
         await loadAdminUsers();
         await loadAdminPrograms();
+    } else if (view === 'worklog') {
+        if (state.profile?.role_id !== 'admin') {
+            showToast('관리자 권한이 필요합니다', 'error');
+            navigate('dashboard');
+            return;
+        }
+        if (state.worklogSelectedPerson) {
+            state.workLogs = await loadWorkLogs(state.worklogSelectedPerson);
+        }
+    } else if (view === 'report') {
+        if (state.profile?.role_id !== 'admin') {
+            showToast('관리자 권한이 필요합니다', 'error');
+            navigate('dashboard');
+            return;
+        }
+        if (!state.reportSelectedDate) {
+            state.reportSelectedDate = kstDateString(0);
+        }
+        state.workLogs = await loadWorkLogs(null, state.reportSelectedDate, state.reportSelectedDate);
+        if (isInternalUser()) {
+            await loadMarketingData();
+        }
     }
 
     renderApp();
@@ -3816,6 +4249,12 @@ function renderApp() {
             break;
         case 'admin':
             app.innerHTML = renderAdminView();
+            break;
+        case 'worklog':
+            app.innerHTML = renderWorklogView();
+            break;
+        case 'report':
+            app.innerHTML = renderReportView();
             break;
         default:
             app.innerHTML = '';

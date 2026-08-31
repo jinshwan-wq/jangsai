@@ -15,3 +15,6 @@ verify_jwt = false
 
 [functions.ingest-cafe-views]
 verify_jwt = false
+
+[functions.ingest-work-logs]
+verify_jwt = false
