@@ -3266,6 +3266,359 @@ textarea.form-input {
 }
 
 
+/* ==========================================
+   업무일지 & 통합보고
+   ========================================== */
+
+/* --- 직원 목록 그리드 --- */
+.worklog-staff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.worklog-person-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.worklog-person-card:hover {
+    border-color: var(--glass-border-hover);
+    background: var(--bg-surface-hover);
+    box-shadow: var(--shadow-glow);
+    transform: translateY(-1px);
+}
+
+.worklog-person-avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: var(--radius-full);
+    background: var(--accent-gradient);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1rem;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.worklog-person-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.worklog-person-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.worklog-person-status {
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.worklog-person-status.has-log {
+    color: var(--success);
+}
+
+.worklog-person-status.no-log {
+    color: var(--text-muted);
+}
+
+.worklog-person-arrow {
+    color: var(--text-muted);
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+/* --- 업무일지 타임라인 --- */
+.worklog-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.worklog-day {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    padding: 18px 22px;
+    transition: var(--transition);
+}
+
+.worklog-day:hover {
+    border-color: var(--glass-border-hover);
+}
+
+.worklog-today {
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: var(--shadow-glow);
+}
+
+.worklog-day-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.worklog-day-date {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.worklog-badge-today {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    background: var(--accent-gradient);
+    color: #fff;
+}
+
+.worklog-badge-empty {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.worklog-section {
+    margin-top: 10px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--accent);
+}
+
+.worklog-section-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--accent-light);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.worklog-section-body {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.worklog-meta {
+    margin-top: 10px;
+    display: flex;
+    gap: 16px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* --- 통합보고 --- */
+.report-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+}
+
+.report-mode-switch {
+    display: flex;
+    gap: 4px;
+}
+
+.report-date-input {
+    font-family: var(--font);
+    font-size: 0.88rem;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    outline: none;
+    transition: var(--transition-fast);
+}
+
+.report-date-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.report-date-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.report-section-header {
+    margin-bottom: 16px;
+}
+
+.report-section-header h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.report-staff-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.report-person-block {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    padding: 18px 22px;
+}
+
+.report-person-name {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--accent-light);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.report-empty {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.report-log-entry {
+    margin-top: 8px;
+}
+
+.report-log-date {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    margin-top: 12px;
+}
+
+.report-sales-empty {
+    padding: 24px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* --- 매출 테이블 --- */
+.report-sales-table-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+}
+
+.report-sales-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.report-sales-table th {
+    padding: 10px 14px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.report-sales-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    color: var(--text-primary);
+}
+
+.report-sales-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.report-sales-table td.total {
+    font-weight: 700;
+    color: var(--accent-light);
+}
+
+.report-sales-table tfoot td {
+    font-weight: 700;
+    border-top: 2px solid var(--glass-border);
+    background: rgba(99, 102, 241, 0.06);
+}
+
+.report-product-cell {
+    text-align: left !important;
+}
+
+.report-brand {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-2);
+    margin-right: 6px;
+}
+
+@media (max-width: 768px) {
+    .worklog-staff-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .report-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .report-mode-switch {
+        justify-content: center;
+    }
+
+    .report-sales-table {
+        font-size: 0.75rem;
+    }
+
+    .report-sales-table th,
+    .report-sales-table td {
+        padding: 8px 8px;
+    }
+}
+
 /* --- Utility Classes --- */
 .hidden { display: none !important; }
 .text-center { text-align: center; }
