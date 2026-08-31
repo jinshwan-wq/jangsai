@@ -131,6 +131,19 @@ function formatDate(dateStr) {
     return d.toLocaleDateString('ko-KR', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function formatDateTime(dateStr) {
+    if (!dateStr) return '접속 기록 없음';
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '접속 기록 없음';
+    return date.toLocaleString('ko-KR', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
 function getRoleColor(roleId) {
     return ROLE_COLORS[roleId] || DEFAULT_ROLE_COLOR;
 }
@@ -212,6 +225,16 @@ async function logout() {
     showToast('로그아웃 되었습니다', 'info');
 }
 
+async function recordCurrentUserAccess() {
+    if (!state.user || !state.profile || !isProfileApproved(state.profile)) return;
+    const { data, error } = await sb.rpc('touch_current_user_last_seen');
+    if (error) {
+        console.warn('마지막 접속 기록 실패:', error);
+        return;
+    }
+    state.profile.last_seen_at = data;
+}
+
 async function loadProfile() {
     if (!state.user) return null;
     const { data, error } = await sb.from('profiles').select('*').eq('id', state.user.id).single();
@@ -219,9 +242,11 @@ async function loadProfile() {
         console.error('프로필 로드 실패:', error);
         if (!isOwnerUser()) return null;
         state.profile = createOwnerProfile();
+        await recordCurrentUserAccess();
         return state.profile;
     }
     state.profile = isOwnerUser() ? { ...data, role_id: 'admin', approval_status: 'approved' } : data;
+    await recordCurrentUserAccess();
     return state.profile;
 }
 
@@ -3097,6 +3122,7 @@ function renderAdminUsers() {
                     <th>아이디</th>
                     <th>등급</th>
                     <th>가입일</th>
+                    <th>마지막 접속일</th>
                     <th>관리</th>
                 </tr>
             </thead>
@@ -3107,6 +3133,7 @@ function renderAdminUsers() {
                     <td style="color:var(--text-secondary)">${escapeHtml(u.username)}</td>
                     <td>${roleBadgeHtml(u.role_id)}</td>
                     <td style="color:var(--text-muted)">${formatDate(u.created_at)}</td>
+                    <td style="color:var(--text-muted)">${formatDateTime(u.last_seen_at)}</td>
                     <td>
                         <div class="table-actions">
                             <button class="btn btn-secondary btn-sm" onclick="showChangeRoleModal('${u.id}','${escapeHtml(u.display_name || u.username)}','${u.role_id}')" title="등급 변경">

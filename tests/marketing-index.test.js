@@ -581,4 +581,18 @@ const okrHtml = vm.runInContext('renderOkrDashboardView()', context);
 assert.match(okrHtml, /분기·연간 목표/);
 assert.match(okrHtml, /목표 600,000/, '브랜드 월 20만 뷰를 분기 60만 뷰 목표로 집계한다');
 
+const adminUsersHtml = vm.runInContext(`(() => {
+    state.adminUsers = [{
+        id: 'user-1',
+        username: '01012345678',
+        display_name: '접속 사용자',
+        role_id: 'employee',
+        created_at: '2026-08-01T00:00:00Z',
+        last_seen_at: '2026-08-31T06:30:00Z'
+    }];
+    return renderAdminUsers();
+})()`, context);
+assert.match(adminUsersHtml, /마지막 접속일/);
+assert.match(adminUsersHtml, /접속 사용자[\s\S]*2026년 8월 31일/, '관리자 사용자 목록에 마지막 접속 시각을 표시한다');
+
 console.log('marketing index tests passed');
