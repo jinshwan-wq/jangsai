@@ -3,12 +3,13 @@ const test = require('node:test');
 
 const contractPromise = import('../supabase/functions/grok-marketing-bridge/contract.mjs');
 
-test('Bridge 날짜는 KST 기준 최근 과거 날짜만 허용한다', async () => {
+test('Bridge 날짜는 KST 기준 오늘 포함 최근 90일 이내를 허용한다', async () => {
   const { kstYesterday, validMetricDate } = await contractPromise;
   const now = new Date('2026-08-28T06:00:00Z');
   assert.equal(kstYesterday(now), '2026-08-27');
   assert.equal(validMetricDate('2026-08-27', now), true);
-  assert.equal(validMetricDate('2026-08-28', now), false);
+  assert.equal(validMetricDate('2026-08-28', now), true, '당일(KST) 실시간 수집 허용');
+  assert.equal(validMetricDate('2026-08-29', now), false, '미래 날짜 거부');
   assert.equal(validMetricDate('2026-05-29', now), false);
   assert.equal(validMetricDate('2026-02-30', now), false);
 });

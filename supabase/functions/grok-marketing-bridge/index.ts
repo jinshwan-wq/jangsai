@@ -247,7 +247,7 @@ function metricDateFrom(body: Record<string, unknown>) {
     ? kstYesterday()
     : String(body.metric_date);
   if (!validMetricDate(metricDate)) {
-    throw new Error("수집 날짜는 최근 90일 이내의 과거 날짜여야 합니다.");
+    throw new Error("수집 날짜는 오늘(KST) 포함 최근 90일 이내여야 합니다.");
   }
   return metricDate;
 }

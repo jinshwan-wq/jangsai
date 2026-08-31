@@ -73,6 +73,7 @@ function metricComplete(metric, key) {
   return metric?.data_completeness?.[key] === true;
 }
 
+// same-day (KST today) is provisional — allows hourly realtime collect
 export function validMetricDate(value, now = new Date()) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -80,7 +81,7 @@ export function validMetricDate(value, now = new Date()) {
   const kstToday = new Date(now.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const earliest = new Date(`${kstToday}T00:00:00Z`);
   earliest.setUTCDate(earliest.getUTCDate() - 90);
-  return value < kstToday && parsed >= earliest;
+  return value <= kstToday && parsed >= earliest;
 }
 
 export function kstYesterday(now = new Date()) {
