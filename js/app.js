@@ -43,6 +43,12 @@ const PRODUCT_KEYWORDS = {
     'yural-tonggam-cream': ['유랄통감크림', '통감크림'],
     'yural-myeongga-bonhwan': ['유랄명가본환', '명가본환'],
 };
+const OVERVIEW_MAIN_KEYWORDS = {
+    'innerium-gala431': '갈라431',
+    'innerium-minti431': '민티431',
+    'yural-tonggam-cream': '유랄통감크림',
+    'yural-myeongga-bonhwan': '유랄명가본환',
+};
 
 const MARKETING_INDEX_RULES = {
     monthlyViewsTarget: 200000,
@@ -1682,7 +1688,7 @@ function renderOverviewTrend(current, previous, options = {}) {
 
 function renderOverviewMetricCell(current, previous, options = {}) {
     if (current === null || current === undefined || !Number.isFinite(current)) {
-        return '<td><span class="overview-no-data">—</span></td>';
+        return `<td><span class="overview-no-data">—</span>${options.note ? `<small class="overview-cell-note">${escapeHtml(options.note)}</small>` : ''}</td>`;
     }
     const value = options.percent
         ? `${current.toFixed(1)}%`
@@ -1700,6 +1706,26 @@ function completeCoupangValue(metric, suffix) {
     return metric && hasCollectedCoupangMetric(metric, suffix)
         ? getCoupangMetric(metric, suffix)
         : null;
+}
+
+function getOverviewMainKeywordMetric(product, metricDate) {
+    const keyword = OVERVIEW_MAIN_KEYWORDS[product?.slug];
+    if (!keyword) return { keyword: product?.name || '', value: null };
+    const normalizedKeyword = keyword.replace(/\s+/g, '').toLowerCase();
+    const matches = item =>
+        item.product_id === product.id &&
+        String(item.keyword || '').replace(/\s+/g, '').toLowerCase() === normalizedKeyword;
+    const snapshot = state.marketingSearchSnapshots.find(item =>
+        item.snapshot_date === metricDate && matches(item)
+    );
+    const daily = state.dailyKeywordMetrics.find(item =>
+        item.metric_date === metricDate && matches(item)
+    );
+    const metric = snapshot || daily;
+    return {
+        keyword,
+        value: metric ? metricNumber(metric.search_volume) : null,
+    };
 }
 
 function renderOverviewConversionCell(productId, channelId, metricDate) {
@@ -1763,15 +1789,15 @@ function renderMarketingComparisonMatrix(metricDate) {
                         <th colspan="2">검색·콘텐츠</th>
                         <th colspan="3">채널 유입</th>
                         <th colspan="4">판매량</th>
-                        <th colspan="2">성과</th>
                         <th colspan="3">채널 전환율</th>
+                        <th colspan="3">성과</th>
                     </tr>
                     <tr>
-                        <th>검색량</th><th>블로그</th>
+                        <th>메인 검색량</th><th>블로그</th>
                         <th>자사몰</th><th>스마트스토어</th><th>쿠팡</th>
                         <th>자사몰</th><th>스스</th><th>Wing</th><th>로켓그로스</th>
-                        <th>총매출</th><th>광고비</th>
                         <th>자사몰</th><th>스스</th><th>쿠팡</th>
+                        <th>총매출</th><th>광고비</th><th>ROAS</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1780,11 +1806,17 @@ function renderMarketingComparisonMatrix(metricDate) {
                         const previous = getProductMetricOnDate(product.id, previousDate);
                         const currentRevenue = current && isRevenueComplete(current) ? getMetricRevenue(current) : null;
                         const previousRevenue = previous && isRevenueComplete(previous) ? getMetricRevenue(previous) : null;
+                        const currentAdSpend = completeMetricValue(current, 'ad_spend');
+                        const previousAdSpend = completeMetricValue(previous, 'ad_spend');
+                        const currentRoas = currentRevenue !== null && currentAdSpend > 0 ? percent(currentRevenue, currentAdSpend) : null;
+                        const previousRoas = previousRevenue !== null && previousAdSpend > 0 ? percent(previousRevenue, previousAdSpend) : null;
+                        const currentSearch = getOverviewMainKeywordMetric(product, metricDate);
+                        const previousSearch = getOverviewMainKeywordMetric(product, previousDate);
                         return `
                         <tr class="${index > 0 && state.marketingProducts[index - 1]?.brand !== product.brand ? 'brand-divider' : ''}"
                             onclick="openProductReport('${product.id}')">
                             <th><small>${escapeHtml(product.brand)}</small><strong>${escapeHtml(product.name)}</strong></th>
-                            ${renderOverviewMetricCell(completeMetricValue(current, 'keyword_search_volume'), completeMetricValue(previous, 'keyword_search_volume'))}
+                            ${renderOverviewMetricCell(currentSearch.value, previousSearch.value, { note: currentSearch.keyword })}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'blog_views'), completeMetricValue(previous, 'blog_views'))}
                             ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[0]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[0]) : null)}
                             ${renderOverviewMetricCell(current ? getChannelVisits(current, MARKETING_CHANNELS[1]) : null, previous ? getChannelVisits(previous, MARKETING_CHANNELS[1]) : null)}
@@ -1793,11 +1825,12 @@ function renderMarketingComparisonMatrix(metricDate) {
                             ${renderOverviewMetricCell(completeMetricValue(current, 'smartstore_orders'), completeMetricValue(previous, 'smartstore_orders'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_wing_orders'), completeMetricValue(previous, 'coupang_wing_orders'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_growth_orders'), completeMetricValue(previous, 'coupang_growth_orders'))}
-                            ${renderOverviewMetricCell(currentRevenue, previousRevenue, { won: true })}
-                            ${renderOverviewMetricCell(completeMetricValue(current, 'ad_spend'), completeMetricValue(previous, 'ad_spend'), { won: true })}
                             ${renderOverviewConversionCell(product.id, 'cafe24', metricDate)}
                             ${renderOverviewConversionCell(product.id, 'smartstore', metricDate)}
                             ${renderOverviewConversionCell(product.id, 'coupang', metricDate)}
+                            ${renderOverviewMetricCell(currentRevenue, previousRevenue, { won: true })}
+                            ${renderOverviewMetricCell(currentAdSpend, previousAdSpend, { won: true })}
+                            ${renderOverviewMetricCell(currentRoas, previousRoas, { percent: true })}
                         </tr>`;
                     }).join('')}
                 </tbody>

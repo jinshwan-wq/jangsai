@@ -235,6 +235,49 @@ assert.equal(weightedConversion.current.rate, 5, '당일 자사몰 전환율을 
 assert.equal(weightedConversion.average.rate, 6.25, '최근 7일 전환율은 방문수 가중 평균으로 계산한다');
 assert.equal(weightedConversion.previous.rate, 10, '전일 전환율을 함께 제공한다');
 
+const overviewMainSearch = vm.runInContext(`(() => {
+    const product = {
+        id: 'gala-product',
+        slug: 'innerium-gala431',
+        brand: '이너리움',
+        name: '갈라431'
+    };
+    state.marketingProducts = [product];
+    state.marketingMetrics = [];
+    state.dailyKeywordMetrics = [];
+    state.marketingSearchSnapshots = [
+        { product_id: product.id, snapshot_date: '2026-08-30', keyword: '이너리움 갈라431', search_volume: 120 },
+        { product_id: product.id, snapshot_date: '2026-08-30', keyword: '갈라431', search_volume: 45 },
+        { product_id: product.id, snapshot_date: '2026-08-30', keyword: '이너리움', search_volume: 570 }
+    ];
+    return {
+        metric: getOverviewMainKeywordMetric(product, '2026-08-30'),
+        html: renderMarketingComparisonMatrix('2026-08-30')
+    };
+})()`, context);
+assert.deepEqual(
+    JSON.parse(JSON.stringify(overviewMainSearch.metric)),
+    { keyword: '갈라431', value: 45 },
+    '통합 현황은 합계가 아니라 제품별 메인 검색어 한 개만 사용한다'
+);
+assert.deepEqual(
+    JSON.parse(JSON.stringify(vm.runInContext(`[
+        OVERVIEW_MAIN_KEYWORDS['innerium-gala431'],
+        OVERVIEW_MAIN_KEYWORDS['innerium-minti431'],
+        OVERVIEW_MAIN_KEYWORDS['yural-tonggam-cream'],
+        OVERVIEW_MAIN_KEYWORDS['yural-myeongga-bonhwan']
+    ]`, context))),
+    ['갈라431', '민티431', '유랄통감크림', '유랄명가본환']
+);
+assert.match(overviewMainSearch.html, /메인 검색량[\s\S]*갈라431/);
+assert.ok(
+    overviewMainSearch.html.indexOf('판매량') <
+        overviewMainSearch.html.indexOf('채널 전환율') &&
+        overviewMainSearch.html.indexOf('채널 전환율') <
+        overviewMainSearch.html.indexOf('성과'),
+    '판매량 다음에 전환율과 성과를 순서대로 표시한다'
+);
+
 const brandAdSpend = vm.runInContext(`(() => {
     state.marketingProducts = [
         { id: 'gala', brand: '이너리움' },
