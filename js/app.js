@@ -137,6 +137,91 @@ function escapeHtml(str) {
     return d.innerHTML;
 }
 
+const REDACT_PATTERNS = [
+    /(?:password|passwd|비밀번호|비번|pw)\s*[:=]\s*\S+/gi,
+    /(?:login|id|아이디)\s*[:=]\s*\S+/gi,
+    /[A-Z]:\\.+?(?=\s|$|[,;)])/g,
+];
+
+function redactSensitive(text) {
+    if (!text) return '';
+    let result = text;
+    for (const pat of REDACT_PATTERNS) {
+        result = result.replace(pat, '[삭제됨]');
+    }
+    return result;
+}
+
+function summarizeLine(text, maxLen = 60) {
+    if (!text) return '';
+    const first = text.split('\n').map(l => l.trim()).filter(Boolean)[0] || '';
+    return first.length > maxLen ? first.slice(0, maxLen) + '…' : first;
+}
+
+const HIGHLIGHT_KEYWORDS = /CS|이슈|재고|장애|마감|채용|긴급|클레임|환불|결제|오류|서버|날짜\s*보정/i;
+const HIGH_AMOUNT_PATTERN = /\d{1,3}(,\d{3}){2,}\s*원/;
+
+function generateBriefing(workLogs, staffRoster) {
+    const total = staffRoster.length;
+    const logMap = new Map();
+    for (const log of workLogs) {
+        logMap.set(log.person_key, log);
+    }
+
+    const written = staffRoster.filter(p => {
+        const log = logMap.get(p.key);
+        return log && (log.work.trim() || log.notes.trim() || log.pending.trim());
+    });
+    const missing = staffRoster.filter(p => !written.some(w => w.key === p.key));
+
+    const statusLine = missing.length === 0
+        ? `작성 ${written.length}/${total} · 전원 작성`
+        : `작성 ${written.length}/${total} · 미작성: ${missing.map(p => p.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '')).join(', ')}`;
+
+    const personLines = staffRoster.map(person => {
+        const log = logMap.get(person.key);
+        const shortName = person.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '');
+        if (!log || !log.work.trim()) {
+            return { name: shortName, lines: ['미작성'], empty: true };
+        }
+
+        const workText = redactSensitive(log.work.trim());
+        const notesText = redactSensitive((log.notes || '').trim());
+        const pendingText = redactSensitive((log.pending || '').trim());
+
+        const lines = [summarizeLine(workText, 70)];
+
+        const extras = [notesText, pendingText].filter(Boolean);
+        for (const extra of extras) {
+            if (HIGHLIGHT_KEYWORDS.test(extra) || HIGH_AMOUNT_PATTERN.test(extra)) {
+                lines.push(summarizeLine(extra, 60));
+            }
+        }
+
+        return { name: shortName, lines, empty: false };
+    });
+
+    const alerts = [];
+    for (const person of staffRoster) {
+        const log = logMap.get(person.key);
+        if (!log) continue;
+        const shortName = person.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '');
+        const combined = [log.notes, log.pending].filter(Boolean).join(' ');
+        const redacted = redactSensitive(combined);
+        if (HIGHLIGHT_KEYWORDS.test(redacted)) {
+            alerts.push(`${shortName}: ${summarizeLine(redacted, 70)}`);
+        }
+        if (HIGH_AMOUNT_PATTERN.test(redacted)) {
+            const match = redacted.match(HIGH_AMOUNT_PATTERN);
+            if (match && !alerts.some(a => a.startsWith(shortName))) {
+                alerts.push(`${shortName}: 금액 관련 — ${summarizeLine(redacted, 60)}`);
+            }
+        }
+    }
+
+    return { statusLine, personLines, alerts: alerts.slice(0, 5) };
+}
+
 function formatFileSize(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
@@ -4079,6 +4164,46 @@ function renderWorklogDetail() {
 // 통합보고 뷰
 // ==========================================
 
+function renderBriefingBlock(workLogs, staffRoster, isWeekly) {
+    if (isWeekly) return '';
+    if (workLogs.length === 0) {
+        return `
+        <div class="briefing-block briefing-empty">
+            <div class="briefing-header">
+                <i class="ri-file-list-3-line"></i> 일일 브리핑
+            </div>
+            <p class="briefing-empty-msg">해당 날짜에 작성된 업무일지가 없습니다.</p>
+        </div>`;
+    }
+
+    const { statusLine, personLines, alerts } = generateBriefing(workLogs, staffRoster);
+
+    const personHtml = personLines.map(p => {
+        const cls = p.empty ? ' class="briefing-line-empty"' : '';
+        const linesHtml = p.lines.map(l => `<span class="briefing-task">${escapeHtml(l)}</span>`).join('<br>');
+        return `<div class="briefing-person"${cls}><span class="briefing-name">${escapeHtml(p.name)}</span> — ${linesHtml}</div>`;
+    }).join('');
+
+    const alertHtml = alerts.length > 0
+        ? alerts.map(a => `<li>${escapeHtml(a)}</li>`).join('')
+        : '<li class="briefing-no-alert">특이 없음</li>';
+
+    return `
+    <div class="briefing-block">
+        <div class="briefing-header">
+            <i class="ri-file-list-3-line"></i> 일일 브리핑
+        </div>
+        <div class="briefing-status">${escapeHtml(statusLine)}</div>
+        <div class="briefing-person-list">
+            ${personHtml}
+        </div>
+        <div class="briefing-alerts">
+            <div class="briefing-alerts-title"><i class="ri-alarm-warning-line"></i> 특이·주의</div>
+            <ul>${alertHtml}</ul>
+        </div>
+    </div>`;
+}
+
 function renderReportView() {
     const selectedDate = state.reportSelectedDate || kstDateString(0);
     const isWeekly = state.reportMode === 'weekly';
@@ -4154,6 +4279,8 @@ function renderReportView() {
             </div>
             <div class="report-date-label">${dateRange.label}</div>
         </div>
+
+        ${renderBriefingBlock(state.workLogs, STAFF_ROSTER, isWeekly)}
 
         <div class="report-section-header">
             <h2><i class="ri-team-line"></i> 직원별 업무 현황</h2>
