@@ -158,8 +158,47 @@ function summarizeLine(text, maxLen = 60) {
     return first.length > maxLen ? first.slice(0, maxLen) + '…' : first;
 }
 
-const HIGHLIGHT_KEYWORDS = /CS|이슈|재고|장애|마감|채용|긴급|클레임|환불|결제|오류|서버|날짜\s*보정/i;
-const HIGH_AMOUNT_PATTERN = /\d{1,3}(,\d{3}){2,}\s*원/;
+const GLOBAL_EXCLUDE_PATTERNS = [
+    /발행|조회수|노출\s*체크|공스덧|V2R|다포.*현황|기관총.*현황/i,
+    /^\s*핫\s*\d+|^\s*재고\s*:?\s*\d+/i,
+];
+
+const STAFF_BRIEFING_RULES = {
+    'wang-dahyun':  { include: /갈라|민티|입고|그로스|비용|광고비|결제|CS|반품|클레임|환불/i, inventoryAlerts: true },
+    'lim-seyeon':   { include: /상페|3D|디자인|산출|마감|납품|자사몰|외주|소통.*이슈/i },
+    'eun-minho':    { include: /브키|AI.*테스트|인수인계|교육/i },
+    'kang-jaeyun':  { include: /바이럴|발행.*이상|발행.*장애|대량.*이슈|인수인계|교육/i },
+    'park-hayeon':  { include: /설득.*원고|과제.*마감|권리\s*침해|신고.*이슈|인수인계|교육/i },
+    'lee-bora':     { include: /비용|입금|세금\s*계산서|급여|인사.*서류|월\s*결산|고정비/i },
+    'lee-minwook':  { include: /제휴\s*카페|계정.*이상|프리미엄|신규.*채널|다포.*장애|발행.*장애/i },
+    'hong-yujin':   { include: /인수인계|교육/i },
+    'lim-seoyun':   { include: /AI.*원고|AI.*의견|AI.*테스트/i },
+    'lee-minjeong': { include: /인수인계|교육|잡무|뒤치다꺼리|서포트|support/i },
+};
+
+function isGlobalExcluded(line) {
+    return GLOBAL_EXCLUDE_PATTERNS.some(p => p.test(line));
+}
+
+function isInventoryDump(line) {
+    return /^\s*(핫|재고)\s*\d/.test(line);
+}
+
+function extractMatchingLines(text, personKey) {
+    if (!text) return [];
+    const rules = STAFF_BRIEFING_RULES[personKey];
+    if (!rules) return [];
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const matched = [];
+    for (const line of lines) {
+        if (isGlobalExcluded(line)) continue;
+        if (isInventoryDump(line) && !rules.inventoryAlerts) continue;
+        if (rules.include.test(line)) {
+            matched.push(line);
+        }
+    }
+    return matched;
+}
 
 function generateBriefing(workLogs, staffRoster) {
     const total = staffRoster.length;
@@ -178,48 +217,35 @@ function generateBriefing(workLogs, staffRoster) {
         ? `작성 ${written.length}/${total} · 전원 작성`
         : `작성 ${written.length}/${total} · 미작성: ${missing.map(p => p.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '')).join(', ')}`;
 
-    const personLines = staffRoster.map(person => {
-        const log = logMap.get(person.key);
-        const shortName = person.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '');
-        if (!log || !log.work.trim()) {
-            return { name: shortName, lines: ['미작성'], empty: true };
-        }
-
-        const workText = redactSensitive(log.work.trim());
-        const notesText = redactSensitive((log.notes || '').trim());
-        const pendingText = redactSensitive((log.pending || '').trim());
-
-        const lines = [summarizeLine(workText, 70)];
-
-        const extras = [notesText, pendingText].filter(Boolean);
-        for (const extra of extras) {
-            if (HIGHLIGHT_KEYWORDS.test(extra) || HIGH_AMOUNT_PATTERN.test(extra)) {
-                lines.push(summarizeLine(extra, 60));
-            }
-        }
-
-        return { name: shortName, lines, empty: false };
-    });
-
+    const personLines = [];
     const alerts = [];
+
     for (const person of staffRoster) {
         const log = logMap.get(person.key);
-        if (!log) continue;
         const shortName = person.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '');
-        const combined = [log.notes, log.pending].filter(Boolean).join(' ');
-        const redacted = redactSensitive(combined);
-        if (HIGHLIGHT_KEYWORDS.test(redacted)) {
-            alerts.push(`${shortName}: ${summarizeLine(redacted, 70)}`);
-        }
-        if (HIGH_AMOUNT_PATTERN.test(redacted)) {
-            const match = redacted.match(HIGH_AMOUNT_PATTERN);
-            if (match && !alerts.some(a => a.startsWith(shortName))) {
-                alerts.push(`${shortName}: 금액 관련 — ${summarizeLine(redacted, 60)}`);
+
+        if (!log || !(log.work || '').trim()) continue;
+
+        const allText = [log.work, log.notes, log.pending].filter(Boolean).join('\n');
+        const redacted = redactSensitive(allText);
+        const hits = extractMatchingLines(redacted, person.key);
+
+        if (hits.length === 0) continue;
+
+        const lines = hits.slice(0, 3).map(h => summarizeLine(h, 70));
+        personLines.push({ name: shortName, lines, empty: false });
+
+        const alertSources = [log.notes, log.pending].filter(Boolean).join('\n');
+        const alertRedacted = redactSensitive(alertSources);
+        const alertHits = extractMatchingLines(alertRedacted, person.key);
+        for (const hit of alertHits) {
+            if (alerts.length < 5) {
+                alerts.push(`${shortName}: ${summarizeLine(hit, 70)}`);
             }
         }
     }
 
-    return { statusLine, personLines, alerts: alerts.slice(0, 5) };
+    return { statusLine, personLines, alerts };
 }
 
 function formatFileSize(bytes) {
@@ -4178,11 +4204,12 @@ function renderBriefingBlock(workLogs, staffRoster, isWeekly) {
 
     const { statusLine, personLines, alerts } = generateBriefing(workLogs, staffRoster);
 
-    const personHtml = personLines.map(p => {
-        const cls = p.empty ? ' class="briefing-line-empty"' : '';
-        const linesHtml = p.lines.map(l => `<span class="briefing-task">${escapeHtml(l)}</span>`).join('<br>');
-        return `<div class="briefing-person"${cls}><span class="briefing-name">${escapeHtml(p.name)}</span> — ${linesHtml}</div>`;
-    }).join('');
+    const personHtml = personLines.length > 0
+        ? personLines.map(p => {
+            const linesHtml = p.lines.map(l => `<span class="briefing-task">${escapeHtml(l)}</span>`).join('<br>');
+            return `<div class="briefing-person"><span class="briefing-name">${escapeHtml(p.name)}</span> — ${linesHtml}</div>`;
+        }).join('')
+        : '<div class="briefing-person briefing-line-empty">루틴 외 특이사항 없음</div>';
 
     const alertHtml = alerts.length > 0
         ? alerts.map(a => `<li>${escapeHtml(a)}</li>`).join('')
