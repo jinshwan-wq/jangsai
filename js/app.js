@@ -9,7 +9,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const EMAIL_DOMAIN = '@jangsai.local';
 const OWNER_EMAIL = 'kher2000@jangsai.local';
 const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbw_kV92ocY27UZGbnSJHhmYDlRK6gzqJDU76HV2VJAvybtmmRihz1vDthCGlvLvAC0/exec';
-const GROK_RUNBOOK_VERSION = 7;
+const GROK_RUNBOOK_VERSION = 8;
 const MARKETING_AUTO_REFRESH_MS = 60 * 1000;
 
 // --- 등급별 색상 ---

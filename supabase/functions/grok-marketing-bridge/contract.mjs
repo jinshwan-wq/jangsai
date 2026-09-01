@@ -38,6 +38,7 @@ export const SOURCE_URLS = Object.freeze({
 const MAX_VISITS = 10_000_000;
 const MAX_ORDERS = 1_000_000;
 const MAX_REVENUE = 1_000_000_000_000;
+export const COUPANG_REVENUE_BASIS = 'net_sales_plus_shipping_minus_seller_discount';
 
 function assertObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -232,6 +233,34 @@ function normalizeCoupangChannel(value, label) {
   const channel = assertObject(value, label);
   const visits = assertSafeInteger(channel.visits, `${label} 방문수`, { max: MAX_VISITS });
   const orders = assertSafeInteger(channel.orders, `${label} 판매량`, { min: -MAX_ORDERS, max: MAX_ORDERS });
+  const grossSales = assertSafeInteger(channel.gross_sales, `${label} 판매금액(총)`, { max: MAX_REVENUE });
+  const refundAmount = assertSafeInteger(channel.refund_amount, `${label} 환불금액`, { max: MAX_REVENUE });
+  const netSales = assertSafeInteger(channel.net_sales, `${label} 판매금액(순)`, {
+    min: -MAX_REVENUE,
+    max: MAX_REVENUE,
+  });
+  const shippingFee = assertSafeInteger(channel.shipping_fee, `${label} 배송비`, { max: MAX_REVENUE });
+  const sellerDiscount = assertSafeInteger(channel.seller_discount, `${label} 판매자 부담 할인·쿠폰`, {
+    max: MAX_REVENUE,
+  });
+  if (netSales !== grossSales - refundAmount) {
+    throw new Error(
+      `${label} 판매금액(순)이 판매금액(총)-환불금액과 일치하지 않습니다. ` +
+      `${netSales}/${grossSales - refundAmount}`,
+    );
+  }
+  const revenue = netSales + shippingFee - sellerDiscount;
+  if (
+    !Number.isSafeInteger(revenue) ||
+    revenue < -MAX_REVENUE ||
+    revenue > MAX_REVENUE ||
+    channel.revenue !== revenue
+  ) {
+    throw new Error(
+      `${label} 매출은 판매금액(순)+배송비-판매자 부담 할인·쿠폰이어야 합니다. ` +
+      `${channel.revenue}/${revenue}`,
+    );
+  }
   const calculatedRate = visits > 0 ? Number(((Math.max(0, orders) / visits) * 100).toFixed(4)) : 0;
   const conversionRate = channel.conversion_rate === undefined
     ? calculatedRate
@@ -242,7 +271,13 @@ function normalizeCoupangChannel(value, label) {
   return {
     visits,
     orders,
-    revenue: assertSafeInteger(channel.revenue, `${label} 매출`, { min: -MAX_REVENUE, max: MAX_REVENUE }),
+    gross_sales: grossSales,
+    refund_amount: refundAmount,
+    net_sales: netSales,
+    shipping_fee: shippingFee,
+    seller_discount: sellerDiscount,
+    revenue,
+    revenue_basis: COUPANG_REVENUE_BASIS,
     conversion_rate: conversionRate,
     conversion_source: channel.conversion_rate === undefined ? 'derived_from_official_counts' : 'official_screen',
   };
@@ -260,7 +295,16 @@ export function normalizeCoupangSubmission(account, metrics, sourceTotals) {
   });
   const totals = assertObject(sourceTotals, '쿠팡 화면 합계');
   const combinedTotals = normalizeCoupangChannel(totals.combined, '쿠팡 공식 전체');
-  for (const field of ['visits', 'orders', 'revenue']) {
+  for (const field of [
+    'visits',
+    'orders',
+    'gross_sales',
+    'refund_amount',
+    'net_sales',
+    'shipping_fee',
+    'seller_discount',
+    'revenue',
+  ]) {
     const sum = normalized.reduce(
       (total, metric) => total + metric.wing[field] + metric.growth[field],
       0,

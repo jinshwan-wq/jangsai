@@ -13,7 +13,7 @@ import {
 } from "./contract.mjs";
 
 const CLIENT_KEY = "grok-marketing-ops";
-const RUNBOOK_VERSION = 7;
+const RUNBOOK_VERSION = 8;
 const BACKLOG_DAYS = 7;
 const PRODUCT_SLUGS = Object.values(ACCOUNT_PRODUCTS).flat().map((
   product: { slug: string },
@@ -103,6 +103,9 @@ function operatorRunbook() {
       "스마트스토어는 스토어분석에서 전일 제품별 방문수·상품결제건수와 판매수량·결제금액을 모두 읽는다.",
       "상품결제건수(pay_count)는 유입 전환 지표이고 판매수량(orders)은 매출 지표이므로 서로 바꾸지 않는다.",
       "쿠팡은 판매자배송·로켓그로스별 공식 구매전환율이 표시되면 conversion_rate에 그대로 담는다.",
+      "쿠팡 판매금액(총)은 환불 전 금액이므로 매출로 제출하지 않는다. 판매금액(순)이 판매금액(총)-환불금액과 같은지 먼저 검증한다.",
+      "쿠팡 매출(revenue)은 판매금액(순)+배송비-판매자 부담 할인·쿠폰으로 계산한다. 쿠팡 부담 할인·쿠폰·포인트는 판매자 부담 할인에 포함하거나 차감하지 않는다.",
+      "쿠팡 화면에서 배송비와 판매자 부담 할인·쿠폰을 분리할 수 없으면 상세 리포트를 내려받아 확인하며, 추정값이나 판매금액(총)을 제출하지 않는다.",
       "job의 payload와 submit_contract에 있는 필드만 읽고 공식 화면 합계와 대조한다.",
       "검증에 성공한 데이터만 submit한다. 추적 외 상품은 unmapped에만 담는다.",
       "일시 장애는 한 번 재시도하고, 계속 실패하면 fail로 회신한 뒤 다음 job을 처리한다.",
@@ -114,6 +117,7 @@ function operatorRunbook() {
       "사용자가 즉시 검증을 요청하면 예약시각을 기다리지 않고 실행한다.",
       "sync의 전일 dashboard_snapshot을 기준값으로 사용한다.",
       "통합매니저의 두 스마트스토어와 두 쿠팡 판매자 화면에서 방문수·상품결제건수·판매수량·결제금액을 다시 읽는다.",
+      "쿠팡은 제품·채널별 판매금액(총), 환불금액, 판매금액(순), 배송비, 판매자 부담 할인·쿠폰을 대조하고 순매출 산식을 재검산한다.",
       "공식 화면 합계와 상품 합계를 먼저 대조한 뒤 DB 기준값과 비교한다.",
       "self-test에서는 submit하지 않고 heartbeat.last_verification에 계정별 pass/mismatch/error만 기록한다.",
     ],
@@ -442,13 +446,23 @@ function jobContract(provider: string) {
       wing: {
         visits: "정수",
         orders: "정수",
-        revenue: "정수",
+        gross_sales: "판매금액(총), 0 이상의 정수",
+        refund_amount: "환불금액, 0 이상의 정수",
+        net_sales: "판매금액(순) = 판매금액(총) - 환불금액",
+        shipping_fee: "배송비, 0 이상의 정수",
+        seller_discount: "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외",
+        revenue: "판매금액(순) + 배송비 - 판매자 부담 할인·쿠폰",
         conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
       },
       growth: {
         visits: "정수",
         orders: "정수",
-        revenue: "정수",
+        gross_sales: "판매금액(총), 0 이상의 정수",
+        refund_amount: "환불금액, 0 이상의 정수",
+        net_sales: "판매금액(순) = 판매금액(총) - 환불금액",
+        shipping_fee: "배송비, 0 이상의 정수",
+        seller_discount: "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외",
+        revenue: "판매금액(순) + 배송비 - 판매자 부담 할인·쿠폰",
         conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
       },
     }],
@@ -456,7 +470,12 @@ function jobContract(provider: string) {
       combined: {
         visits: "공식 방문자 카드",
         orders: "공식 판매량 카드",
-        revenue: "공식 매출 카드",
+        gross_sales: "공식 판매금액(총) 합계",
+        refund_amount: "공식 환불금액 합계",
+        net_sales: "공식 판매금액(순) 합계",
+        shipping_fee: "공식 배송비 합계",
+        seller_discount: "공식 판매자 부담 할인·쿠폰 합계",
+        revenue: "판매금액(순)+배송비-판매자 부담 할인·쿠폰 합계",
         conversion_rate: "공식 전체 구매전환율(%), 표시되지 않으면 생략",
       },
     },

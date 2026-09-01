@@ -557,7 +557,7 @@ assert.match(
         state.marketingBridgeClients = [{
             client_key: 'grok-marketing-ops',
             last_seen_at: new Date().toISOString(),
-            details: { runbook_version: 7 }
+            details: { runbook_version: 8 }
         }];
         state.marketingBridgeJobs = [
             { metric_date: '${expectedMetricDate}', provider: 'smartstore', account: 'innerium', status: 'completed' },

@@ -3,6 +3,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 type ChannelMetric = {
   visits: number;
   orders: number;
+  gross_sales: number;
+  refund_amount: number;
+  net_sales: number;
+  shipping_fee: number;
+  seller_discount: number;
   revenue: number;
 };
 
@@ -26,7 +31,15 @@ function validChannel(value: unknown): value is ChannelMetric {
   const channel = value as Record<string, unknown>;
   return Number.isSafeInteger(channel.visits) && Number(channel.visits) >= 0 &&
     Number.isSafeInteger(channel.orders) &&
-    Number.isSafeInteger(channel.revenue);
+    Number.isSafeInteger(channel.gross_sales) && Number(channel.gross_sales) >= 0 &&
+    Number.isSafeInteger(channel.refund_amount) && Number(channel.refund_amount) >= 0 &&
+    Number.isSafeInteger(channel.net_sales) &&
+    Number(channel.net_sales) === Number(channel.gross_sales) - Number(channel.refund_amount) &&
+    Number.isSafeInteger(channel.shipping_fee) && Number(channel.shipping_fee) >= 0 &&
+    Number.isSafeInteger(channel.seller_discount) && Number(channel.seller_discount) >= 0 &&
+    Number.isSafeInteger(channel.revenue) &&
+    Number(channel.revenue) ===
+      Number(channel.net_sales) + Number(channel.shipping_fee) - Number(channel.seller_discount);
 }
 
 function validMetric(value: unknown): value is CoupangMetric {
@@ -171,6 +184,21 @@ Deno.serve(async request => {
         collector: 'local_wing_browser_session',
         account: body.account,
         collected_at: new Date().toISOString(),
+        revenue_basis: 'net_sales_plus_shipping_minus_seller_discount',
+        wing_breakdown: {
+          gross_sales: metric.wing.gross_sales,
+          refund_amount: metric.wing.refund_amount,
+          net_sales: metric.wing.net_sales,
+          shipping_fee: metric.wing.shipping_fee,
+          seller_discount: metric.wing.seller_discount,
+        },
+        growth_breakdown: {
+          gross_sales: metric.growth.gross_sales,
+          refund_amount: metric.growth.refund_amount,
+          net_sales: metric.growth.net_sales,
+          shipping_fee: metric.growth.shipping_fee,
+          seller_discount: metric.growth.seller_discount,
+        },
       },
     });
     if (metricError) {

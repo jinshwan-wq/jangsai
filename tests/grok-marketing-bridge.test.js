@@ -3,6 +3,27 @@ const test = require('node:test');
 
 const contractPromise = import('../supabase/functions/grok-marketing-bridge/contract.mjs');
 
+function coupangChannel({
+  visits,
+  orders,
+  grossSales,
+  refundAmount,
+  shippingFee = 0,
+  sellerDiscount = 0,
+}) {
+  const netSales = grossSales - refundAmount;
+  return {
+    visits,
+    orders,
+    gross_sales: grossSales,
+    refund_amount: refundAmount,
+    net_sales: netSales,
+    shipping_fee: shippingFee,
+    seller_discount: sellerDiscount,
+    revenue: netSales + shippingFee - sellerDiscount,
+  };
+}
+
 test('Bridge 날짜는 KST 기준 최근 과거 날짜만 허용한다', async () => {
   const { kstYesterday, validMetricDate } = await contractPromise;
   const now = new Date('2026-08-28T06:00:00Z');
@@ -130,25 +151,56 @@ test('스마트스토어는 추적 제품과 미분류 상품을 포함한 화�
 });
 
 test('쿠팡 반품 음수는 허용하되 공식 전체 합계를 강제한다', async () => {
-  const { normalizeCoupangSubmission } = await contractPromise;
+  const { COUPANG_REVENUE_BASIS, normalizeCoupangSubmission } = await contractPromise;
   const metrics = [
     {
       product_slug: 'yural-tonggam-cream',
-      wing: { visits: 10, orders: -1, revenue: -30000 },
-      growth: { visits: 20, orders: 2, revenue: 60000 },
+      wing: coupangChannel({
+        visits: 10,
+        orders: -1,
+        grossSales: 50000,
+        refundAmount: 80000,
+      }),
+      growth: coupangChannel({
+        visits: 20,
+        orders: 2,
+        grossSales: 70000,
+        refundAmount: 10000,
+        shippingFee: 3000,
+        sellerDiscount: 3000,
+      }),
     },
     {
       product_slug: 'yural-myeongga-bonhwan',
-      wing: { visits: 5, orders: 0, revenue: 0 },
-      growth: { visits: 7, orders: 1, revenue: 20000 },
+      wing: coupangChannel({
+        visits: 5,
+        orders: 0,
+        grossSales: 0,
+        refundAmount: 0,
+      }),
+      growth: coupangChannel({
+        visits: 7,
+        orders: 1,
+        grossSales: 20000,
+        refundAmount: 0,
+      }),
     },
   ];
   const totals = {
-    combined: { visits: 42, orders: 2, revenue: 50000 },
+    combined: coupangChannel({
+      visits: 42,
+      orders: 2,
+      grossSales: 140000,
+      refundAmount: 90000,
+      shippingFee: 3000,
+      sellerDiscount: 3000,
+    }),
   };
   const result = normalizeCoupangSubmission('yural', metrics, totals);
   assert.equal(result.source_totals.combined.visits, 42);
   assert.equal(result.metrics[0].wing.orders, -1);
+  assert.equal(result.metrics[0].wing.revenue, -30000);
+  assert.equal(result.metrics[0].wing.revenue_basis, COUPANG_REVENUE_BASIS);
   assert.equal(result.metrics[0].growth.conversion_rate, 10);
   assert.equal(result.metrics[0].growth.conversion_source, 'derived_from_official_counts');
   assert.throws(
@@ -156,5 +208,12 @@ test('쿠팡 반품 음수는 허용하되 공식 전체 합계를 강제한다'
       combined: { ...totals.combined, visits: 43 },
     }),
     /합계가 일치하지 않습니다/,
+  );
+  assert.throws(
+    () => normalizeCoupangSubmission('yural', [{
+      ...metrics[0],
+      wing: { ...metrics[0].wing, revenue: metrics[0].wing.gross_sales },
+    }, metrics[1]], totals),
+    /판매금액\(순\)\+배송비-판매자 부담 할인·쿠폰이어야 합니다/,
   );
 });
