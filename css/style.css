@@ -3435,6 +3435,136 @@ textarea.form-input {
     color: var(--text-muted);
 }
 
+/* --- 통합보고 브리핑 블록 --- */
+.briefing-block {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    border-left: 3px solid var(--accent);
+}
+
+.briefing-block.briefing-empty {
+    border-left-color: var(--text-muted);
+}
+
+.briefing-header {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--accent-light);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.briefing-status {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 6px 12px;
+    background: rgba(99, 102, 241, 0.08);
+    border-radius: var(--radius-sm);
+    margin-bottom: 14px;
+    display: inline-block;
+}
+
+.briefing-person-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+}
+
+.briefing-person {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding: 2px 0;
+}
+
+.briefing-person[class*="empty"] {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.briefing-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.briefing-task {
+    color: var(--text-secondary);
+}
+
+.briefing-alerts {
+    padding-top: 10px;
+    border-top: 1px solid var(--glass-border);
+}
+
+.briefing-alerts-title {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--warning);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.briefing-alerts ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.briefing-alerts li {
+    font-size: 0.84rem;
+    color: var(--text-secondary);
+    padding: 3px 0 3px 16px;
+    position: relative;
+    line-height: 1.5;
+}
+
+.briefing-alerts li::before {
+    content: '•';
+    position: absolute;
+    left: 2px;
+    color: var(--warning);
+    font-weight: 700;
+}
+
+.briefing-alerts li.briefing-no-alert {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.briefing-alerts li.briefing-no-alert::before {
+    color: var(--text-muted);
+}
+
+.briefing-empty-msg {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin: 0;
+}
+
+@media (max-width: 768px) {
+    .briefing-block {
+        padding: 16px 16px;
+    }
+
+    .briefing-person {
+        font-size: 0.82rem;
+    }
+
+    .briefing-status {
+        font-size: 0.82rem;
+    }
+}
+
 /* --- 통합보고 --- */
 .report-controls {
     display: flex;

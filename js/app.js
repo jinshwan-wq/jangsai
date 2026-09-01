@@ -137,6 +137,117 @@ function escapeHtml(str) {
     return d.innerHTML;
 }
 
+const REDACT_PATTERNS = [
+    /(?:password|passwd|비밀번호|비번|pw)\s*[:=]\s*\S+/gi,
+    /(?:login|id|아이디)\s*[:=]\s*\S+/gi,
+    /[A-Z]:\\.+?(?=\s|$|[,;)])/g,
+];
+
+function redactSensitive(text) {
+    if (!text) return '';
+    let result = text;
+    for (const pat of REDACT_PATTERNS) {
+        result = result.replace(pat, '[삭제됨]');
+    }
+    return result;
+}
+
+function summarizeLine(text, maxLen = 60) {
+    if (!text) return '';
+    const first = text.split('\n').map(l => l.trim()).filter(Boolean)[0] || '';
+    return first.length > maxLen ? first.slice(0, maxLen) + '…' : first;
+}
+
+const GLOBAL_EXCLUDE_PATTERNS = [
+    /발행|조회수|노출\s*체크|공스덧|V2R|다포.*현황|기관총.*현황/i,
+    /^\s*핫\s*\d+|^\s*재고\s*:?\s*\d+/i,
+];
+
+const STAFF_BRIEFING_RULES = {
+    'wang-dahyun':  { include: /갈라|민티|입고|그로스|비용|광고비|결제|CS|반품|클레임|환불/i, inventoryAlerts: true },
+    'lim-seyeon':   { include: /상페|3D|디자인|산출|마감|납품|자사몰|외주|소통.*이슈/i },
+    'eun-minho':    { include: /브키|AI.*테스트|인수인계|교육/i },
+    'kang-jaeyun':  { include: /바이럴|발행.*이상|발행.*장애|대량.*이슈|인수인계|교육/i },
+    'park-hayeon':  { include: /설득.*원고|과제.*마감|권리\s*침해|신고.*이슈|인수인계|교육/i },
+    'lee-bora':     { include: /비용|입금|세금\s*계산서|급여|인사.*서류|월\s*결산|고정비/i },
+    'lee-minwook':  { include: /제휴\s*카페|계정.*이상|프리미엄|신규.*채널|다포.*장애|발행.*장애/i },
+    'hong-yujin':   { include: /인수인계|교육/i },
+    'lim-seoyun':   { include: /AI.*원고|AI.*의견|AI.*테스트/i },
+    'lee-minjeong': { include: /인수인계|교육|잡무|뒤치다꺼리|서포트|support/i },
+};
+
+function isGlobalExcluded(line) {
+    return GLOBAL_EXCLUDE_PATTERNS.some(p => p.test(line));
+}
+
+function isInventoryDump(line) {
+    return /^\s*(핫|재고)\s*\d/.test(line);
+}
+
+function extractMatchingLines(text, personKey) {
+    if (!text) return [];
+    const rules = STAFF_BRIEFING_RULES[personKey];
+    if (!rules) return [];
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const matched = [];
+    for (const line of lines) {
+        if (isGlobalExcluded(line)) continue;
+        if (isInventoryDump(line) && !rules.inventoryAlerts) continue;
+        if (rules.include.test(line)) {
+            matched.push(line);
+        }
+    }
+    return matched;
+}
+
+function generateBriefing(workLogs, staffRoster) {
+    const total = staffRoster.length;
+    const logMap = new Map();
+    for (const log of workLogs) {
+        logMap.set(log.person_key, log);
+    }
+
+    const written = staffRoster.filter(p => {
+        const log = logMap.get(p.key);
+        return log && (log.work.trim() || log.notes.trim() || log.pending.trim());
+    });
+    const missing = staffRoster.filter(p => !written.some(w => w.key === p.key));
+
+    const statusLine = missing.length === 0
+        ? `작성 ${written.length}/${total} · 전원 작성`
+        : `작성 ${written.length}/${total} · 미작성: ${missing.map(p => p.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '')).join(', ')}`;
+
+    const personLines = [];
+    const alerts = [];
+
+    for (const person of staffRoster) {
+        const log = logMap.get(person.key);
+        const shortName = person.name.replace(/ (대리|주임|사원|과장|부장|차장|팀장)$/, '');
+
+        if (!log || !(log.work || '').trim()) continue;
+
+        const allText = [log.work, log.notes, log.pending].filter(Boolean).join('\n');
+        const redacted = redactSensitive(allText);
+        const hits = extractMatchingLines(redacted, person.key);
+
+        if (hits.length === 0) continue;
+
+        const lines = hits.slice(0, 3).map(h => summarizeLine(h, 70));
+        personLines.push({ name: shortName, lines, empty: false });
+
+        const alertSources = [log.notes, log.pending].filter(Boolean).join('\n');
+        const alertRedacted = redactSensitive(alertSources);
+        const alertHits = extractMatchingLines(alertRedacted, person.key);
+        for (const hit of alertHits) {
+            if (alerts.length < 5) {
+                alerts.push(`${shortName}: ${summarizeLine(hit, 70)}`);
+            }
+        }
+    }
+
+    return { statusLine, personLines, alerts };
+}
+
 function formatFileSize(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
@@ -4079,6 +4190,47 @@ function renderWorklogDetail() {
 // 통합보고 뷰
 // ==========================================
 
+function renderBriefingBlock(workLogs, staffRoster, isWeekly) {
+    if (isWeekly) return '';
+    if (workLogs.length === 0) {
+        return `
+        <div class="briefing-block briefing-empty">
+            <div class="briefing-header">
+                <i class="ri-file-list-3-line"></i> 일일 브리핑
+            </div>
+            <p class="briefing-empty-msg">해당 날짜에 작성된 업무일지가 없습니다.</p>
+        </div>`;
+    }
+
+    const { statusLine, personLines, alerts } = generateBriefing(workLogs, staffRoster);
+
+    const personHtml = personLines.length > 0
+        ? personLines.map(p => {
+            const linesHtml = p.lines.map(l => `<span class="briefing-task">${escapeHtml(l)}</span>`).join('<br>');
+            return `<div class="briefing-person"><span class="briefing-name">${escapeHtml(p.name)}</span> — ${linesHtml}</div>`;
+        }).join('')
+        : '<div class="briefing-person briefing-line-empty">루틴 외 특이사항 없음</div>';
+
+    const alertHtml = alerts.length > 0
+        ? alerts.map(a => `<li>${escapeHtml(a)}</li>`).join('')
+        : '<li class="briefing-no-alert">특이 없음</li>';
+
+    return `
+    <div class="briefing-block">
+        <div class="briefing-header">
+            <i class="ri-file-list-3-line"></i> 일일 브리핑
+        </div>
+        <div class="briefing-status">${escapeHtml(statusLine)}</div>
+        <div class="briefing-person-list">
+            ${personHtml}
+        </div>
+        <div class="briefing-alerts">
+            <div class="briefing-alerts-title"><i class="ri-alarm-warning-line"></i> 특이·주의</div>
+            <ul>${alertHtml}</ul>
+        </div>
+    </div>`;
+}
+
 function renderReportView() {
     const selectedDate = state.reportSelectedDate || kstDateString(0);
     const isWeekly = state.reportMode === 'weekly';
@@ -4154,6 +4306,8 @@ function renderReportView() {
             </div>
             <div class="report-date-label">${dateRange.label}</div>
         </div>
+
+        ${renderBriefingBlock(state.workLogs, STAFF_ROSTER, isWeekly)}
 
         <div class="report-section-header">
             <h2><i class="ri-team-line"></i> 직원별 업무 현황</h2>
