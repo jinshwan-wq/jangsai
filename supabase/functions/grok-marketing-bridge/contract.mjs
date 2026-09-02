@@ -17,6 +17,19 @@ export const TASK_REQUIREMENTS = Object.freeze({
     'smartstore_orders',
     'smartstore_revenue',
   ]),
+  coupang_sales: Object.freeze([
+    'coupang_wing_orders',
+    'coupang_wing_revenue',
+    'coupang_growth_orders',
+    'coupang_growth_revenue',
+  ]),
+  coupang_visits: Object.freeze([
+    'coupang_wing_visits',
+    'coupang_wing_conversion_rate',
+    'coupang_growth_visits',
+    'coupang_growth_conversion_rate',
+    'coupang_conversion_rate',
+  ]),
   coupang: Object.freeze([
     'coupang_wing_visits',
     'coupang_wing_orders',
@@ -91,12 +104,15 @@ export function kstYesterday(now = new Date()) {
 }
 
 export function providerReadyAt(provider, metricDate = kstYesterday(), now = new Date()) {
-  if (provider !== 'coupang') return true;
+  if (provider !== 'coupang' && provider !== 'coupang_sales' && provider !== 'coupang_visits') return true;
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const kstToday = kst.toISOString().slice(0, 10);
   const yesterday = new Date(`${kstToday}T00:00:00Z`);
   yesterday.setUTCDate(yesterday.getUTCDate() - 1);
   if (metricDate < yesterday.toISOString().slice(0, 10)) return true;
+  if (provider === 'coupang_sales') {
+    return kst.getUTCHours() * 60 + kst.getUTCMinutes() >= 9 * 60 + 30;
+  }
   return kst.getUTCHours() * 60 + kst.getUTCMinutes() >= 12 * 60 + 40;
 }
 
@@ -121,8 +137,9 @@ export function isActionableJob(job) {
 
 export function deriveMissingTasks(metricsBySlug, metricDate) {
   const tasks = [];
+  const taskProviders = ['smartstore', 'coupang_sales', 'coupang_visits'];
   for (const [account, products] of Object.entries(ACCOUNT_PRODUCTS)) {
-    for (const provider of Object.keys(TASK_REQUIREMENTS)) {
+    for (const provider of taskProviders) {
       const missingFieldsByProduct = products.map(product => {
         const metric = metricsBySlug.get(product.slug);
         return {
@@ -132,12 +149,13 @@ export function deriveMissingTasks(metricsBySlug, metricDate) {
         };
       }).filter(product => product.missing_fields.length);
       if (!missingFieldsByProduct.length) continue;
+      const sourceProvider = provider.startsWith('coupang') ? 'coupang' : provider;
       tasks.push({
         provider,
         account,
         metric_date: metricDate,
         task_type: 'collect',
-        source_url: SOURCE_URLS[provider],
+        source_url: SOURCE_URLS[sourceProvider],
         products,
         missing_fields_by_product: missingFieldsByProduct,
       });
@@ -229,93 +247,128 @@ export function normalizeSmartstoreSubmission(account, metrics, sourceTotals, un
   };
 }
 
-function normalizeCoupangChannel(value, label) {
+function normalizeCoupangChannel(value, label, { salesOnly = false } = {}) {
   const channel = assertObject(value, label);
-  const visits = assertSafeInteger(channel.visits, `${label} 방문수`, { max: MAX_VISITS });
   const orders = assertSafeInteger(channel.orders, `${label} 판매량`, { min: -MAX_ORDERS, max: MAX_ORDERS });
-  const grossSales = assertSafeInteger(channel.gross_sales, `${label} 판매금액(총)`, { max: MAX_REVENUE });
-  const refundAmount = assertSafeInteger(channel.refund_amount, `${label} 환불금액`, { max: MAX_REVENUE });
-  const netSales = assertSafeInteger(channel.net_sales, `${label} 판매금액(순)`, {
-    min: -MAX_REVENUE,
-    max: MAX_REVENUE,
-  });
-  const shippingFee = assertSafeInteger(channel.shipping_fee, `${label} 배송비`, { max: MAX_REVENUE });
-  const sellerDiscount = assertSafeInteger(channel.seller_discount, `${label} 판매자 부담 할인·쿠폰`, {
-    max: MAX_REVENUE,
-  });
-  if (netSales !== grossSales - refundAmount) {
-    throw new Error(
-      `${label} 판매금액(순)이 판매금액(총)-환불금액과 일치하지 않습니다. ` +
-      `${netSales}/${grossSales - refundAmount}`,
-    );
+
+  const hasVisits = channel.visits !== undefined && channel.visits !== null;
+  const hasV9Money = channel.gross_sales !== undefined && channel.gross_sales !== null;
+
+  if (!salesOnly && !hasVisits) {
+    throw new Error(`${label} 방문수 값이 올바르지 않습니다.`);
   }
-  const revenue = netSales + shippingFee - sellerDiscount;
-  if (
-    !Number.isSafeInteger(revenue) ||
-    revenue < -MAX_REVENUE ||
-    revenue > MAX_REVENUE ||
-    channel.revenue !== revenue
-  ) {
-    throw new Error(
-      `${label} 매출은 판매금액(순)+배송비-판매자 부담 할인·쿠폰이어야 합니다. ` +
-      `${channel.revenue}/${revenue}`,
-    );
+
+  const visits = hasVisits
+    ? assertSafeInteger(channel.visits, `${label} 방문수`, { max: MAX_VISITS })
+    : null;
+
+  if (hasV9Money) {
+    const grossSales = assertSafeInteger(channel.gross_sales, `${label} 판매금액(총)`, { max: MAX_REVENUE });
+    const refundAmount = assertSafeInteger(channel.refund_amount, `${label} 환불금액`, { max: MAX_REVENUE });
+    const netSales = assertSafeInteger(channel.net_sales, `${label} 판매금액(순)`, {
+      min: -MAX_REVENUE,
+      max: MAX_REVENUE,
+    });
+    const shippingFee = assertSafeInteger(channel.shipping_fee, `${label} 배송비`, { max: MAX_REVENUE });
+    const sellerDiscount = assertSafeInteger(channel.seller_discount, `${label} 판매자 부담 할인·쿠폰`, {
+      max: MAX_REVENUE,
+    });
+    if (netSales !== grossSales - refundAmount) {
+      throw new Error(
+        `${label} 판매금액(순)이 판매금액(총)-환불금액과 일치하지 않습니다. ` +
+        `${netSales}/${grossSales - refundAmount}`,
+      );
+    }
+    const revenue = netSales + shippingFee - sellerDiscount;
+    if (
+      !Number.isSafeInteger(revenue) ||
+      revenue < -MAX_REVENUE ||
+      revenue > MAX_REVENUE ||
+      channel.revenue !== revenue
+    ) {
+      throw new Error(
+        `${label} 매출은 판매금액(순)+배송비-판매자 부담 할인·쿠폰이어야 합니다. ` +
+        `${channel.revenue}/${revenue}`,
+      );
+    }
+    const calculatedRate = (visits !== null && visits > 0) ? Number(((Math.max(0, orders) / visits) * 100).toFixed(4)) : 0;
+    const conversionRate = channel.conversion_rate === undefined
+      ? calculatedRate
+      : Number(channel.conversion_rate);
+    if (visits !== null && (!Number.isFinite(conversionRate) || conversionRate < 0 || conversionRate > 10_000)) {
+      throw new Error(`${label} 구매전환율 값이 올바르지 않습니다.`);
+    }
+    return {
+      visits,
+      orders,
+      gross_sales: grossSales,
+      refund_amount: refundAmount,
+      net_sales: netSales,
+      shipping_fee: shippingFee,
+      seller_discount: sellerDiscount,
+      revenue,
+      revenue_basis: COUPANG_REVENUE_BASIS,
+      conversion_rate: visits !== null ? conversionRate : null,
+      conversion_source: visits !== null
+        ? (channel.conversion_rate === undefined ? 'derived_from_official_counts' : 'official_screen')
+        : null,
+    };
   }
-  const calculatedRate = visits > 0 ? Number(((Math.max(0, orders) / visits) * 100).toFixed(4)) : 0;
-  const conversionRate = channel.conversion_rate === undefined
-    ? calculatedRate
-    : Number(channel.conversion_rate);
-  if (!Number.isFinite(conversionRate) || conversionRate < 0 || conversionRate > 10_000) {
-    throw new Error(`${label} 구매전환율 값이 올바르지 않습니다.`);
+
+  if (salesOnly) {
+    assertSafeInteger(channel.revenue, `${label} 매출`, { min: -MAX_REVENUE, max: MAX_REVENUE });
+    return {
+      visits,
+      orders,
+      gross_sales: null,
+      refund_amount: null,
+      net_sales: null,
+      shipping_fee: null,
+      seller_discount: null,
+      revenue: channel.revenue,
+      revenue_basis: COUPANG_REVENUE_BASIS,
+      conversion_rate: null,
+      conversion_source: null,
+    };
   }
-  return {
-    visits,
-    orders,
-    gross_sales: grossSales,
-    refund_amount: refundAmount,
-    net_sales: netSales,
-    shipping_fee: shippingFee,
-    seller_discount: sellerDiscount,
-    revenue,
-    revenue_basis: COUPANG_REVENUE_BASIS,
-    conversion_rate: conversionRate,
-    conversion_source: channel.conversion_rate === undefined ? 'derived_from_official_counts' : 'official_screen',
-  };
+
+  throw new Error(`${label} 판매금액(총) 또는 매출(revenue) 값이 필요합니다.`);
 }
 
 export function normalizeCoupangSubmission(account, metrics, sourceTotals) {
   assertProductSet(account, metrics);
+  const firstMetric = assertObject(metrics[0], '쿠팡 제품 지표');
+  const firstWing = assertObject(firstMetric.wing, '쿠팡 판매자배송');
+  const salesOnly = firstWing.visits === undefined || firstWing.visits === null;
+
   const normalized = metrics.map(item => {
     const metric = assertObject(item, '쿠팡 제품 지표');
     return {
       product_slug: String(metric.product_slug),
-      wing: normalizeCoupangChannel(metric.wing, `${metric.product_slug} 판매자배송`),
-      growth: normalizeCoupangChannel(metric.growth, `${metric.product_slug} 로켓그로스`),
+      wing: normalizeCoupangChannel(metric.wing, `${metric.product_slug} 판매자배송`, { salesOnly }),
+      growth: normalizeCoupangChannel(metric.growth, `${metric.product_slug} 로켓그로스`, { salesOnly }),
     };
   });
   const totals = assertObject(sourceTotals, '쿠팡 화면 합계');
-  const combinedTotals = normalizeCoupangChannel(totals.combined, '쿠팡 공식 전체');
-  for (const field of [
-    'visits',
-    'orders',
-    'gross_sales',
-    'refund_amount',
-    'net_sales',
-    'shipping_fee',
-    'seller_discount',
-    'revenue',
-  ]) {
+  const combinedTotals = normalizeCoupangChannel(totals.combined, '쿠팡 공식 전체', { salesOnly });
+
+  const checkFields = salesOnly
+    ? ['orders', 'revenue']
+    : ['visits', 'orders', 'gross_sales', 'refund_amount', 'net_sales', 'shipping_fee', 'seller_discount', 'revenue'];
+
+  for (const field of checkFields) {
     const sum = normalized.reduce(
-      (total, metric) => total + metric.wing[field] + metric.growth[field],
+      (total, metric) => total + (metric.wing[field] ?? 0) + (metric.growth[field] ?? 0),
       0,
     );
-    if (sum !== combinedTotals[field]) {
+    const expected = combinedTotals[field];
+    if (expected !== null && sum !== expected) {
       throw new Error(
-        `쿠팡 공식 ${field} 합계가 일치하지 않습니다. ${sum}/${combinedTotals[field]}`,
+        `쿠팡 공식 ${field} 합계가 일치하지 않습니다. ${sum}/${expected}`,
       );
     }
   }
-  return { metrics: normalized, source_totals: { combined: combinedTotals } };
+  return { metrics: normalized, source_totals: { combined: combinedTotals }, sales_only: salesOnly };
 }
 
 export function normalizeSubmission(provider, account, metrics, sourceTotals, unmappedRows) {
@@ -326,4 +379,8 @@ export function normalizeSubmission(provider, account, metrics, sourceTotals, un
     return normalizeCoupangSubmission(account, metrics, sourceTotals);
   }
   throw new Error('허용되지 않은 수집 제공자입니다.');
+}
+
+export function isCoupangSalesOnly(normalized) {
+  return normalized.sales_only === true;
 }
