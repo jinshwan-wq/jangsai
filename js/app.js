@@ -618,6 +618,13 @@ async function loadAdminPrograms() {
 // ==========================================
 
 async function changeUserRole(userId, newRoleId) {
+    if (newRoleId !== 'admin') {
+        const adminCount = state.adminUsers.filter(u => u.role_id === 'admin').length;
+        const target = state.adminUsers.find(u => u.id === userId);
+        if (target?.role_id === 'admin' && adminCount <= 1) {
+            throw new Error('마지막 관리자는 등급을 변경할 수 없습니다');
+        }
+    }
     const { error } = await sb.from('profiles').update({ role_id: newRoleId }).eq('id', userId);
     if (error) throw new Error('등급 변경 실패: ' + error.message);
 }
@@ -3614,7 +3621,7 @@ function renderSignupRequests() {
                 </div>
                 <div class="request-controls">
                     <select class="form-input" id="request-role-${request.id}" aria-label="승인 등급">
-                        ${state.roles.filter(role => role.id !== 'admin').map(role =>
+                        ${state.roles.map(role =>
                             `<option value="${role.id}" ${role.is_default ? 'selected' : ''}>${escapeHtml(role.name)}</option>`
                         ).join('')}
                     </select>
@@ -3633,6 +3640,9 @@ function renderSignupRequests() {
             ${rejectedRequests.map(request => `
                 <div class="rejected-request-row">
                     <span>${escapeHtml(request.display_name || request.username)} · ${escapeHtml(request.username)}</span>
+                    <select class="form-input" id="request-role-${request.id}" aria-label="승인 등급" style="min-width:100px">
+                        ${state.roles.map(role => `<option value="${role.id}" ${role.is_default ? 'selected' : ''}>${escapeHtml(role.name)}</option>`).join('')}
+                    </select>
                     <button class="btn btn-secondary btn-sm" onclick="handleReviewRequest('${request.id}', 'approved')">다시 승인</button>
                 </div>`).join('')}
         </details>` : ''}`;
@@ -3785,7 +3795,7 @@ function showCreateUserModal() {
                 <div class="form-group">
                     <label class="form-label">등급</label>
                     <select class="form-input" id="modal-user-role">
-                        ${state.roles.filter(r => r.id !== 'admin').map(r =>
+                        ${state.roles.map(r =>
                             `<option value="${r.id}" ${r.is_default ? 'selected' : ''}>${escapeHtml(r.name)} (레벨 ${r.level})</option>`
                         ).join('')}
                     </select>
