@@ -97,6 +97,10 @@ const state = {
     marketingPeriod: '7d',
     marketingView: 'overview',
     reportPeriod: '3d',
+    customDateFrom: null,
+    customDateTo: null,
+    customReportDateFrom: null,
+    customReportDateTo: null,
     marketingDataReady: true,
     marketingLastRefreshedAt: null,
     // 업무일지 & 통합보고
@@ -1236,7 +1240,7 @@ function getSelectedBrands() {
 }
 
 function getVisibleMarketingMetrics() {
-    const { from, to } = getPeriodBounds(state.marketingPeriod, { anchorYesterday: true });
+    const { from, to } = getPeriodBounds(state.marketingPeriod, { anchorYesterday: true, customFrom: state.customDateFrom, customTo: state.customDateTo });
     const selectedIds = getSelectedProductIds();
 
     return state.marketingMetrics.filter(metric =>
@@ -1246,7 +1250,15 @@ function getVisibleMarketingMetrics() {
     );
 }
 
-function getPeriodBounds(period, { anchorYesterday = false } = {}) {
+function getPeriodBounds(period, { anchorYesterday = false, customFrom = null, customTo = null } = {}) {
+    if (period === 'custom') {
+        const from = customFrom;
+        const to = customTo;
+        if (from && to) return { from, to: to < from ? from : to };
+        const fallback = kstDateString(-1);
+        return { from: fallback, to: fallback };
+    }
+
     const anchor = new Date();
     anchor.setHours(0, 0, 0, 0);
     if (anchorYesterday) anchor.setDate(anchor.getDate() - 1);
@@ -1261,6 +1273,10 @@ function getPeriodBounds(period, { anchorYesterday = false } = {}) {
         from.setDate(from.getDate() - mondayOffset);
     } else if (period === 'month') {
         from.setDate(1);
+    } else if (period === 'prev_month') {
+        from.setDate(1);
+        from.setMonth(from.getMonth() - 1);
+        to.setDate(0);
     } else {
         const days = Number.parseInt(period, 10) || 1;
         from.setDate(from.getDate() - days + 1);
@@ -1807,7 +1823,7 @@ function kstDateString(offsetDays = 0) {
 }
 
 function getReportDates() {
-    const { from, to } = getPeriodBounds(state.reportPeriod, { anchorYesterday: true });
+    const { from, to } = getPeriodBounds(state.reportPeriod, { anchorYesterday: true, customFrom: state.customReportDateFrom, customTo: state.customReportDateTo });
     const dates = [];
     const cursor = new Date(`${to}T00:00:00`);
     const first = new Date(`${from}T00:00:00`);
@@ -2004,9 +2020,12 @@ function completeMetricValue(metric, key) {
 }
 
 function completeCoupangValue(metric, suffix) {
-    return metric && hasCollectedCoupangMetric(metric, suffix)
-        ? getCoupangMetric(metric, suffix)
-        : null;
+    if (!metric) return null;
+    if (hasCollectedCoupangMetric(metric, suffix)) return getCoupangMetric(metric, suffix);
+    const wing = nullableMetricNumber(metric[`coupang_wing_${suffix}`]);
+    const growth = nullableMetricNumber(metric[`coupang_growth_${suffix}`]);
+    if (wing !== null || growth !== null) return metricNumber(wing) + metricNumber(growth);
+    return null;
 }
 
 function getOverviewMainKeywordMetric(product, metricDate) {
@@ -2023,10 +2042,10 @@ function getOverviewMainKeywordMetric(product, metricDate) {
         item.metric_date === metricDate && matches(item)
     );
     const metric = snapshot || daily;
-    return {
-        keyword,
-        value: metric ? metricNumber(metric.search_volume) : null,
-    };
+    if (metric) return { keyword, value: metricNumber(metric.search_volume) };
+    const productMetric = getProductMetricOnDate(product.id, metricDate);
+    const fallback = completeMetricValue(productMetric, 'keyword_search_volume');
+    return { keyword, value: fallback };
 }
 
 function renderOverviewConversionCell(productId, channelId, metricDate) {
@@ -2076,10 +2095,79 @@ function renderChannelConversionPanel(metricDate) {
 
 function renderMarketingComparisonMatrix(metricDate) {
     const previousDate = shiftMetricDate(metricDate, -1);
+
+    const productRows = state.marketingProducts.map((product, index) => {
+        const current = getProductMetricOnDate(product.id, metricDate);
+        const previous = getProductMetricOnDate(product.id, previousDate);
+        const currentRevenue = current && isRevenueComplete(current) ? getMetricRevenue(current) : null;
+        const previousRevenue = previous && isRevenueComplete(previous) ? getMetricRevenue(previous) : null;
+        const currentAdSpend = completeMetricValue(current, 'ad_spend');
+        const previousAdSpend = completeMetricValue(previous, 'ad_spend');
+        const currentRoas = currentRevenue !== null && currentAdSpend > 0 ? percent(currentRevenue, currentAdSpend) : null;
+        const previousRoas = previousRevenue !== null && previousAdSpend > 0 ? percent(previousRevenue, previousAdSpend) : null;
+        const currentSearch = getOverviewMainKeywordMetric(product, metricDate);
+        const previousSearch = getOverviewMainKeywordMetric(product, previousDate);
+        const brandProducts = state.marketingProducts.filter(item => item.brand === product.brand);
+        const isFirstBrandProduct = brandProducts[0]?.id === product.id;
+        const currentStoreVisits = getCafe24StoreVisits(product, metricDate);
+        const previousStoreVisits = getCafe24StoreVisits(product, previousDate);
+
+        const curCafe24Rev = completeMetricValue(current, 'cafe24_revenue');
+        const prevCafe24Rev = completeMetricValue(previous, 'cafe24_revenue');
+        const curSSRev = completeMetricValue(current, 'smartstore_revenue');
+        const prevSSRev = completeMetricValue(previous, 'smartstore_revenue');
+        const curWingRev = current ? nullableMetricNumber(current.coupang_wing_revenue) : null;
+        const prevWingRev = previous ? nullableMetricNumber(previous.coupang_wing_revenue) : null;
+        const curGrowthRev = current ? nullableMetricNumber(current.coupang_growth_revenue) : null;
+        const prevGrowthRev = previous ? nullableMetricNumber(previous.coupang_growth_revenue) : null;
+
+        return {
+            product, index, current, previous,
+            currentRevenue, previousRevenue,
+            currentAdSpend, previousAdSpend,
+            currentRoas, previousRoas,
+            currentSearch, previousSearch,
+            brandProducts, isFirstBrandProduct,
+            currentStoreVisits, previousStoreVisits,
+            curCafe24Rev, prevCafe24Rev,
+            curSSRev, prevSSRev,
+            curWingRev, prevWingRev,
+            curGrowthRev, prevGrowthRev,
+        };
+    });
+
+    const safeSum = values => {
+        const valid = values.filter(v => v !== null && v !== undefined && Number.isFinite(v));
+        return valid.length ? valid.reduce((a, b) => a + b, 0) : null;
+    };
+
+    const totalRevenue = safeSum(productRows.map(r => r.currentRevenue));
+    const totalPrevRevenue = safeSum(productRows.map(r => r.previousRevenue));
+    const totalAdSpend = safeSum(productRows.map(r => r.currentAdSpend));
+    const totalPrevAdSpend = safeSum(productRows.map(r => r.previousAdSpend));
+    const totalRoas = totalRevenue !== null && totalAdSpend > 0 ? percent(totalRevenue, totalAdSpend) : null;
+    const totalPrevRoas = totalPrevRevenue !== null && totalPrevAdSpend > 0 ? percent(totalPrevRevenue, totalPrevAdSpend) : null;
+    const totalCafe24Rev = safeSum(productRows.map(r => r.curCafe24Rev));
+    const totalPrevCafe24Rev = safeSum(productRows.map(r => r.prevCafe24Rev));
+    const totalSSRev = safeSum(productRows.map(r => r.curSSRev));
+    const totalPrevSSRev = safeSum(productRows.map(r => r.prevSSRev));
+    const totalWingRev = safeSum(productRows.map(r => r.curWingRev));
+    const totalPrevWingRev = safeSum(productRows.map(r => r.prevWingRev));
+    const totalGrowthRev = safeSum(productRows.map(r => r.curGrowthRev));
+    const totalPrevGrowthRev = safeSum(productRows.map(r => r.prevGrowthRev));
+    const totalCafe24Ord = safeSum(productRows.map(r => completeMetricValue(r.current, 'cafe24_orders')));
+    const totalPrevCafe24Ord = safeSum(productRows.map(r => completeMetricValue(r.previous, 'cafe24_orders')));
+    const totalSSOrd = safeSum(productRows.map(r => completeMetricValue(r.current, 'smartstore_orders')));
+    const totalPrevSSOrd = safeSum(productRows.map(r => completeMetricValue(r.previous, 'smartstore_orders')));
+    const totalWingOrd = safeSum(productRows.map(r => completeMetricValue(r.current, 'coupang_wing_orders')));
+    const totalPrevWingOrd = safeSum(productRows.map(r => completeMetricValue(r.previous, 'coupang_wing_orders')));
+    const totalGrowthOrd = safeSum(productRows.map(r => completeMetricValue(r.current, 'coupang_growth_orders')));
+    const totalPrevGrowthOrd = safeSum(productRows.map(r => completeMetricValue(r.previous, 'coupang_growth_orders')));
+
     return `
     <section class="marketing-comparison-section">
         <div class="overview-section-heading">
-            <div><span>ALL PRODUCTS</span><h2>4개 제품 통합 비교</h2></div>
+            <div><span>ALL PRODUCTS</span><h2>${state.marketingProducts.length}개 제품 통합 비교</h2></div>
             <small>${escapeHtml(metricDate)} · 각 행을 누르면 제품별 상세 보고서로 이동</small>
         </div>
         <div class="marketing-comparison-scroll">
@@ -2087,45 +2175,34 @@ function renderMarketingComparisonMatrix(metricDate) {
                 <thead>
                     <tr class="comparison-groups">
                         <th rowspan="2">브랜드·제품</th>
-                        <th colspan="2">검색·콘텐츠</th>
-                        <th colspan="4">채널 유입</th>
+                        <th colspan="2">노출</th>
+                        <th colspan="4">유입</th>
                         <th colspan="4">판매량</th>
-                        <th colspan="3">채널 전환율</th>
-                        <th colspan="3">성과</th>
+                        <th colspan="4">매출</th>
+                        <th colspan="3">전환율</th>
+                        <th colspan="2">성과</th>
                     </tr>
                     <tr>
                         <th>메인 검색량</th><th>블로그</th>
-                        <th>자사몰 전체 방문</th><th>상품상세 조회(PV)</th><th>스마트스토어</th><th>쿠팡</th>
+                        <th>자사몰 방문</th><th>상품상세(PV)</th><th>스마트스토어</th><th>쿠팡</th>
+                        <th>자사몰</th><th>스스</th><th>Wing</th><th>로켓그로스</th>
                         <th>자사몰</th><th>스스</th><th>Wing</th><th>로켓그로스</th>
                         <th>자사몰</th><th>스스</th><th>쿠팡</th>
-                        <th>총매출</th><th>광고비</th><th>ROAS</th>
+                        <th>총매출</th><th>ROAS</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${state.marketingProducts.map((product, index) => {
-                        const current = getProductMetricOnDate(product.id, metricDate);
-                        const previous = getProductMetricOnDate(product.id, previousDate);
-                        const currentRevenue = current && isRevenueComplete(current) ? getMetricRevenue(current) : null;
-                        const previousRevenue = previous && isRevenueComplete(previous) ? getMetricRevenue(previous) : null;
-                        const currentAdSpend = completeMetricValue(current, 'ad_spend');
-                        const previousAdSpend = completeMetricValue(previous, 'ad_spend');
-                        const currentRoas = currentRevenue !== null && currentAdSpend > 0 ? percent(currentRevenue, currentAdSpend) : null;
-                        const previousRoas = previousRevenue !== null && previousAdSpend > 0 ? percent(previousRevenue, previousAdSpend) : null;
-                        const currentSearch = getOverviewMainKeywordMetric(product, metricDate);
-                        const previousSearch = getOverviewMainKeywordMetric(product, previousDate);
-                        const brandProducts = state.marketingProducts.filter(item => item.brand === product.brand);
-                        const isFirstBrandProduct = brandProducts[0]?.id === product.id;
-                        const currentStoreVisits = getCafe24StoreVisits(product, metricDate);
-                        const previousStoreVisits = getCafe24StoreVisits(product, previousDate);
+                    ${productRows.map(r => {
+                        const { product, index, current, previous } = r;
                         return `
                         <tr class="${index > 0 && state.marketingProducts[index - 1]?.brand !== product.brand ? 'brand-divider' : ''}"
                             onclick="openProductReport('${product.id}')">
                             <th><small>${escapeHtml(product.brand)}</small><strong>${escapeHtml(product.name)}</strong></th>
-                            ${renderOverviewMetricCell(currentSearch.value, previousSearch.value, { note: currentSearch.keyword })}
+                            ${renderOverviewMetricCell(r.currentSearch.value, r.previousSearch.value, { note: r.currentSearch.keyword })}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'blog_views'), completeMetricValue(previous, 'blog_views'))}
-                            ${isFirstBrandProduct ? renderOverviewMetricCell(currentStoreVisits, previousStoreVisits, {
+                            ${r.isFirstBrandProduct ? renderOverviewMetricCell(r.currentStoreVisits, r.previousStoreVisits, {
                                 note: `${product.brand} 몰 전체`,
-                                rowspan: brandProducts.length,
+                                rowspan: r.brandProducts.length,
                                 className: 'brand-shared-cell',
                             }) : ''}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'cafe24_product_views'), completeMetricValue(previous, 'cafe24_product_views'))}
@@ -2135,15 +2212,36 @@ function renderMarketingComparisonMatrix(metricDate) {
                             ${renderOverviewMetricCell(completeMetricValue(current, 'smartstore_orders'), completeMetricValue(previous, 'smartstore_orders'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_wing_orders'), completeMetricValue(previous, 'coupang_wing_orders'))}
                             ${renderOverviewMetricCell(completeMetricValue(current, 'coupang_growth_orders'), completeMetricValue(previous, 'coupang_growth_orders'))}
+                            ${renderOverviewMetricCell(r.curCafe24Rev, r.prevCafe24Rev, { won: true })}
+                            ${renderOverviewMetricCell(r.curSSRev, r.prevSSRev, { won: true })}
+                            ${renderOverviewMetricCell(r.curWingRev, r.prevWingRev, { won: true })}
+                            ${renderOverviewMetricCell(r.curGrowthRev, r.prevGrowthRev, { won: true })}
                             ${renderOverviewConversionCell(product.id, 'cafe24', metricDate)}
                             ${renderOverviewConversionCell(product.id, 'smartstore', metricDate)}
                             ${renderOverviewConversionCell(product.id, 'coupang', metricDate)}
-                            ${renderOverviewMetricCell(currentRevenue, previousRevenue, { won: true })}
-                            ${renderOverviewMetricCell(currentAdSpend, previousAdSpend, { won: true })}
-                            ${renderOverviewMetricCell(currentRoas, previousRoas, { percent: true })}
+                            ${renderOverviewMetricCell(r.currentRevenue, r.previousRevenue, { won: true })}
+                            ${renderOverviewMetricCell(r.currentRoas, r.previousRoas, { percent: true })}
                         </tr>`;
                     }).join('')}
                 </tbody>
+                <tfoot>
+                    <tr>
+                        <th>합계</th>
+                        <td></td><td></td>
+                        <td></td><td></td><td></td><td></td>
+                        ${renderOverviewMetricCell(totalCafe24Ord, totalPrevCafe24Ord)}
+                        ${renderOverviewMetricCell(totalSSOrd, totalPrevSSOrd)}
+                        ${renderOverviewMetricCell(totalWingOrd, totalPrevWingOrd)}
+                        ${renderOverviewMetricCell(totalGrowthOrd, totalPrevGrowthOrd)}
+                        ${renderOverviewMetricCell(totalCafe24Rev, totalPrevCafe24Rev, { won: true })}
+                        ${renderOverviewMetricCell(totalSSRev, totalPrevSSRev, { won: true })}
+                        ${renderOverviewMetricCell(totalWingRev, totalPrevWingRev, { won: true })}
+                        ${renderOverviewMetricCell(totalGrowthRev, totalPrevGrowthRev, { won: true })}
+                        <td></td><td></td><td></td>
+                        ${renderOverviewMetricCell(totalRevenue, totalPrevRevenue, { won: true })}
+                        ${renderOverviewMetricCell(totalRoas, totalPrevRoas, { percent: true })}
+                    </tr>
+                </tfoot>
             </table>
         </div>
     </section>`;
@@ -2222,9 +2320,12 @@ function renderInternalReportView() {
                         <small>${escapeHtml(item.brand)}</small><strong>${escapeHtml(item.name)}</strong>
                     </button>`).join('')}
             </div>
-            <select class="filter-select" onchange="changeReportPeriod(this.value)">
-                ${renderPeriodOptions(state.reportPeriod, true)}
-            </select>
+            <div class="period-select-group">
+                <select class="filter-select" onchange="changeReportPeriod(this.value)">
+                    ${renderPeriodOptions(state.reportPeriod, true)}
+                </select>
+                ${renderCustomDateRange(state.reportPeriod, 'changeCustomReportDate', state.customReportDateFrom, state.customReportDateTo)}
+            </div>
         </section>
 
         <section class="report-keywords">
@@ -2471,9 +2572,12 @@ function renderFunnelDashboardView() {
                     <button class="${state.selectedMarketingProduct === `brand:${brand}` ? 'active' : ''}" onclick="selectMarketingBrand('${encodeURIComponent(brand)}')">${escapeHtml(brand)}</button>
                 `).join('')}
             </div>
-            <select class="filter-select" onchange="changeMarketingPeriod(this.value)">
-                ${renderPeriodOptions(state.marketingPeriod)}
-            </select>
+            <div class="period-select-group">
+                <select class="filter-select" onchange="changeMarketingPeriod(this.value)">
+                    ${renderPeriodOptions(state.marketingPeriod)}
+                </select>
+                ${renderCustomDateRange(state.marketingPeriod, 'changeCustomMarketingDate', state.customDateFrom, state.customDateTo)}
+            </div>
         </section>
 
         ${state.profile?.role_id === 'admin' ? `
@@ -2689,6 +2793,8 @@ function renderPeriodOptions(selected, isReport = false) {
             ['7d', '최근 7일'],
             ['14d', '최근 14일'],
             ['30d', '최근 30일'],
+            ['prev_month', '전월'],
+            ['custom', '사용자 지정'],
         ]
         : [
             ['1d', '어제'],
@@ -2697,18 +2803,50 @@ function renderPeriodOptions(selected, isReport = false) {
             ['30d', '최근 30일'],
             ['week', '이번 주'],
             ['month', '이번 달'],
+            ['prev_month', '전월'],
+            ['custom', '사용자 지정'],
         ];
     return options.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
 }
 
 function changeReportPeriod(value) {
     state.reportPeriod = value;
+    if (value === 'custom' && !state.customReportDateFrom) {
+        state.customReportDateFrom = kstDateString(-1);
+        state.customReportDateTo = kstDateString(-1);
+    }
     renderApp();
 }
 
 function changeMarketingPeriod(value) {
     state.marketingPeriod = value;
+    if (value === 'custom' && !state.customDateFrom) {
+        state.customDateFrom = kstDateString(-1);
+        state.customDateTo = kstDateString(-1);
+    }
     renderApp();
+}
+
+function changeCustomMarketingDate(field, value) {
+    if (field === 'from') state.customDateFrom = value;
+    else state.customDateTo = value;
+    renderApp();
+}
+
+function changeCustomReportDate(field, value) {
+    if (field === 'from') state.customReportDateFrom = value;
+    else state.customReportDateTo = value;
+    renderApp();
+}
+
+function renderCustomDateRange(period, changeFn, fromValue, toValue) {
+    if (period !== 'custom') return '';
+    const maxDate = kstDateString(0);
+    return `<div class="custom-date-range">
+        <input type="date" class="report-date-input" value="${fromValue || ''}" max="${maxDate}" onchange="${changeFn}('from', this.value)">
+        <span class="custom-date-sep">~</span>
+        <input type="date" class="report-date-input" value="${toValue || ''}" max="${maxDate}" onchange="${changeFn}('to', this.value)">
+    </div>`;
 }
 
 function showGoogleSheetImportModal() {
@@ -4301,8 +4439,12 @@ function renderReportView() {
                 <button class="btn btn-sm ${!isWeekly ? 'btn-primary' : 'btn-secondary'}" onclick="setReportMode('daily')">일간</button>
                 <button class="btn btn-sm ${isWeekly ? 'btn-primary' : 'btn-secondary'}" onclick="setReportMode('weekly')">주간</button>
             </div>
-            <div class="report-date-picker">
+            <div class="report-date-nav">
+                <button class="btn btn-ghost btn-sm" onclick="shiftReportDate(-1)" title="전일"><i class="ri-arrow-left-s-line"></i></button>
                 <input type="date" class="report-date-input" value="${selectedDate}" onchange="changeReportDate(this.value)" max="${kstDateString(0)}">
+                <button class="btn btn-ghost btn-sm" onclick="shiftReportDate(1)" title="다음날" ${selectedDate >= kstDateString(0) ? 'disabled' : ''}><i class="ri-arrow-right-s-line"></i></button>
+                <button class="btn btn-secondary btn-sm" onclick="changeReportDate(kstDateString(-1))">어제</button>
+                <button class="btn btn-secondary btn-sm" onclick="changeReportDate(kstDateString(0))">오늘</button>
             </div>
             <div class="report-date-label">${dateRange.label}</div>
         </div>
@@ -4326,6 +4468,15 @@ async function setReportMode(mode) {
 
 async function changeReportDate(date) {
     state.reportSelectedDate = date;
+    await navigateReport();
+}
+
+async function shiftReportDate(offsetDays) {
+    const current = state.reportSelectedDate || kstDateString(0);
+    const next = shiftMetricDate(current, offsetDays);
+    const today = kstDateString(0);
+    if (next > today) return;
+    state.reportSelectedDate = next;
     await navigateReport();
 }
 

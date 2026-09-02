@@ -297,8 +297,8 @@ assert.deepEqual(
 assert.match(overviewMainSearch.html, /메인 검색량[\s\S]*갈라431/);
 assert.ok(
     overviewMainSearch.html.indexOf('판매량') <
-        overviewMainSearch.html.indexOf('채널 전환율') &&
-        overviewMainSearch.html.indexOf('채널 전환율') <
+        overviewMainSearch.html.indexOf('전환율') &&
+        overviewMainSearch.html.indexOf('전환율') <
         overviewMainSearch.html.indexOf('성과'),
     '판매량 다음에 전환율과 성과를 순서대로 표시한다'
 );
@@ -448,9 +448,9 @@ const overviewHtml = vm.runInContext('renderOverviewDashboardView()', context);
 assert.match(overviewHtml, /서버 자동수집/);
 assert.match(overviewHtml, /Grok 자동수집/);
 assert.match(overviewHtml, /채널별 구매 전환율/);
-assert.match(overviewHtml, /4개 제품 통합 비교/);
+assert.match(overviewHtml, /\d+개 제품 통합 비교/);
 assert.match(overviewHtml, /자사몰[\s\S]*스마트스토어[\s\S]*쿠팡/);
-assert.match(overviewHtml, /자사몰 전체 방문[\s\S]*상품상세 조회\(PV\)/);
+assert.match(overviewHtml, /자사몰 방문[\s\S]*상품상세\(PV\)/);
 const expectedMetricDate = vm.runInContext('kstDateString(-1)', context);
 const bridgeFailureHtml = vm.runInContext(`(() => {
     state.marketingBridgeClients = [{

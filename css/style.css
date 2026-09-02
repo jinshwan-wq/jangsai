@@ -2954,7 +2954,7 @@ textarea.form-input {
 
 .marketing-comparison-table {
     width: 100%;
-    min-width: 2020px;
+    min-width: 2380px;
     border-collapse: separate;
     border-spacing: 0;
 }
@@ -3771,3 +3771,70 @@ textarea.form-input {
 .flex-wrap { flex-wrap: wrap; }
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
+
+/* --- Period Selector + Custom Date Range --- */
+.period-select-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.custom-date-range {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    animation: fadeIn 0.25s var(--ease);
+}
+
+.custom-date-sep {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.custom-date-range .report-date-input {
+    min-width: 140px;
+}
+
+/* dark theme date input color-scheme */
+.report-date-input {
+    color-scheme: dark;
+}
+
+@media (max-width: 768px) {
+    .period-select-group {
+        width: 100%;
+    }
+
+    .custom-date-range {
+        width: 100%;
+    }
+
+    .custom-date-range .report-date-input {
+        flex: 1;
+        min-width: 0;
+    }
+}
+
+/* --- Comparison Table Totals Row --- */
+.marketing-comparison-table tfoot th,
+.marketing-comparison-table tfoot td {
+    padding: 12px 12px;
+    border-top: 2px solid var(--glass-border-hover);
+    background: rgba(99, 102, 241, 0.06);
+    font-weight: 800;
+}
+
+.marketing-comparison-table tfoot th {
+    text-align: left;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+}
+
+/* --- Report Date Nav --- */
+.report-date-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
