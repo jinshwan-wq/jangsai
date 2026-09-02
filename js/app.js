@@ -2029,36 +2029,20 @@ function completeCoupangValue(metric, suffix) {
 }
 
 function getOverviewMainKeywordMetric(product, metricDate) {
-    const mainKeyword = OVERVIEW_MAIN_KEYWORDS[product?.slug];
-    const allAliases = PRODUCT_KEYWORDS[product?.slug] || [];
-    const displayKeyword = mainKeyword || product?.name || '';
-
-    const normalizeKw = kw => String(kw || '').replace(/\s+/g, '').toLowerCase();
-
-    const matchItem = (item, dateProp) =>
-        item.product_id === product.id && item[dateProp] === metricDate;
-
-    if (mainKeyword) {
-        const mainNorm = normalizeKw(mainKeyword);
-        const mainMatch = item => matchItem(item, 'snapshot_date') && normalizeKw(item.keyword) === mainNorm;
-        const mainDaily = item => matchItem(item, 'metric_date') && normalizeKw(item.keyword) === mainNorm;
-        const hit = state.marketingSearchSnapshots.find(mainMatch) || state.dailyKeywordMetrics.find(mainDaily);
-        if (hit) return { keyword: displayKeyword, value: metricNumber(hit.search_volume) };
-    }
-
-    const aliasSet = new Set(allAliases.map(normalizeKw));
-    const aliasMatch = item => matchItem(item, 'snapshot_date') && aliasSet.has(normalizeKw(item.keyword));
-    const aliasDaily = item => matchItem(item, 'metric_date') && aliasSet.has(normalizeKw(item.keyword));
-    const aliasHit = state.marketingSearchSnapshots.find(aliasMatch) || state.dailyKeywordMetrics.find(aliasDaily);
-    if (aliasHit) return { keyword: displayKeyword, value: metricNumber(aliasHit.search_volume) };
-
-    const productMetric = getProductMetricOnDate(product.id, metricDate);
-    const raw = nullableMetricNumber(productMetric?.keyword_search_volume);
-    if (raw !== null && raw > 0) return { keyword: displayKeyword, value: raw };
-    if (productMetric && hasCollectedMetric(productMetric, 'keyword_search_volume')) {
-        return { keyword: displayKeyword, value: metricNumber(productMetric.keyword_search_volume) };
-    }
-    return { keyword: displayKeyword, value: null };
+    const keyword = OVERVIEW_MAIN_KEYWORDS[product?.slug];
+    if (!keyword) return { keyword: product?.name || '', value: null };
+    const normalized = keyword.replace(/\s+/g, '').toLowerCase();
+    const matchSnapshot = item =>
+        item.product_id === product.id &&
+        item.snapshot_date === metricDate &&
+        item.keyword.replace(/\s+/g, '').toLowerCase() === normalized;
+    const matchDaily = item =>
+        item.product_id === product.id &&
+        item.metric_date === metricDate &&
+        String(item.keyword || '').replace(/\s+/g, '').toLowerCase() === normalized;
+    const hit = state.marketingSearchSnapshots.find(matchSnapshot)
+        || state.dailyKeywordMetrics.find(matchDaily);
+    return { keyword, value: hit ? metricNumber(hit.search_volume) : null };
 }
 
 function renderOverviewConversionCell(productId, channelId, metricDate) {
@@ -2203,15 +2187,6 @@ function renderMarketingComparisonMatrix(metricDate) {
         </div>
         <div class="marketing-comparison-scroll">
             <table class="marketing-comparison-table">
-                <colgroup>
-                    <col class="col-product">
-                    <col span="2" class="col-group-exposure">
-                    <col span="4" class="col-group-inflow">
-                    <col span="4" class="col-group-sales">
-                    <col span="4" class="col-group-revenue">
-                    <col span="3" class="col-group-conversion">
-                    <col span="2" class="col-group-performance">
-                </colgroup>
                 <thead>
                     <tr class="comparison-groups">
                         <th rowspan="2">브랜드·제품</th>
