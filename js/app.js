@@ -2328,8 +2328,8 @@ function renderOverviewDashboardView() {
 
         ${renderGrokBridgeStatus(expectedDate)}
 
-        <section class="overview-search-cards">
-            <div class="overview-search-heading"><i class="ri-search-line"></i> 메인 검색량</div>
+        <section class="overview-section overview-section-exposure">
+            <div class="overview-section-label"><i class="ri-eye-line"></i> 노출</div>
             <div class="overview-search-grid">
                 ${searchCards.map(c => `
                 <div class="overview-search-card">
@@ -2340,42 +2340,65 @@ function renderOverviewDashboardView() {
             </div>
         </section>
 
-        <section class="overview-kpi-strip">
-            <div class="overview-kpi">
-                <span>총매출</span>
-                <strong>${totalRevenue !== null ? formatWon(totalRevenue) : '—'}</strong>
-                ${revDelta !== null ? `<small class="${revDelta >= 0 ? 'up' : 'down'}">${revDelta >= 0 ? '▲' : '▼'} ${formatWon(Math.abs(revDelta))}</small>` : ''}
+        <div class="overview-two-col">
+            <section class="overview-section overview-section-inflow">
+                <div class="overview-section-label"><i class="ri-route-line"></i> 유입</div>
+                <div class="overview-inflow-grid">
+                    ${productSummaries.map(p => `
+                    <div class="overview-inflow-item">
+                        <span>${escapeHtml(p.product.name)}</span>
+                        <div>
+                            <strong>${p.visits !== null ? formatMetric(p.visits) : '—'}</strong>
+                            <small>자사몰</small>
+                        </div>
+                        <div>
+                            <strong>${p.blogViews !== null ? formatMetric(p.blogViews) : '—'}</strong>
+                            <small>블로그</small>
+                        </div>
+                    </div>`).join('')}
+                </div>
+            </section>
+
+            <section class="overview-section overview-section-conversion">
+                <div class="overview-section-label"><i class="ri-shopping-cart-line"></i> 전환</div>
+                <div class="overview-conv-kpis">
+                    <div class="overview-conv-kpi">
+                        <span>총매출</span>
+                        <strong>${totalRevenue !== null ? formatWon(totalRevenue) : '—'}</strong>
+                        ${revDelta !== null ? `<small class="${revDelta >= 0 ? 'up' : 'down'}">${revDelta >= 0 ? '▲' : '▼'} ${formatWon(Math.abs(revDelta))}</small>` : ''}
+                    </div>
+                    <div class="overview-conv-kpi">
+                        <span>주문</span>
+                        <strong>${totalOrders !== null ? `${formatMetric(totalOrders)}건` : '—'}</strong>
+                    </div>
+                    ${convSummaries.map(c => `
+                    <div class="overview-conv-kpi overview-conv-rate">
+                        <span>${convLabels[c.id]}</span>
+                        <strong>${c.rate !== null ? `${c.rate.toFixed(1)}%` : '—'}</strong>
+                        ${c.avg !== null ? `<small class="same">7일 ${c.avg.toFixed(1)}%</small>` : ''}
+                    </div>`).join('')}
+                </div>
+            </section>
+        </div>
+
+        <section class="overview-section overview-section-performance">
+            <div class="overview-section-label"><i class="ri-bar-chart-grouped-line"></i> 성과</div>
+            <div class="overview-perf-strip">
+                <div class="overview-perf-kpi"><span>광고비</span><strong>${totalAdSpend !== null ? formatWon(totalAdSpend) : '—'}</strong></div>
+                <div class="overview-perf-kpi"><span>ROAS</span><strong>${totalRoas !== null ? `${totalRoas.toFixed(0)}%` : '—'}</strong></div>
             </div>
-            <div class="overview-kpi">
-                <span>총주문</span>
-                <strong>${totalOrders !== null ? `${formatMetric(totalOrders)}건` : '—'}</strong>
-            </div>
-            <div class="overview-kpi">
-                <span>광고비</span>
-                <strong>${totalAdSpend !== null ? formatWon(totalAdSpend) : '—'}</strong>
-            </div>
-            <div class="overview-kpi">
-                <span>ROAS</span>
-                <strong>${totalRoas !== null ? `${totalRoas.toFixed(0)}%` : '—'}</strong>
-            </div>
-            ${convSummaries.map(c => `
-            <div class="overview-kpi overview-kpi-conv">
-                <span>${convLabels[c.id]} 전환</span>
-                <strong>${c.rate !== null ? `${c.rate.toFixed(1)}%` : '—'}</strong>
-                ${c.avg !== null ? `<small class="same">7일 ${c.avg.toFixed(1)}%</small>` : ''}
-            </div>`).join('')}
         </section>
 
         <section class="overview-product-list">
             <div class="overview-product-header">
                 <span class="col-name">제품</span>
                 <span class="col-rev">매출</span>
-                <span class="col-detail">자사몰</span>
-                <span class="col-detail">스스</span>
-                <span class="col-detail">쿠팡</span>
-                <span class="col-orders">주문</span>
-                <span class="col-blog">블로그</span>
-                <span class="col-visits">자사몰 방문</span>
+                <span class="col-detail col-h-conv">자사몰</span>
+                <span class="col-detail col-h-conv">스스</span>
+                <span class="col-detail col-h-conv">쿠팡</span>
+                <span class="col-orders col-h-conv">주문</span>
+                <span class="col-blog col-h-exposure">블로그</span>
+                <span class="col-visits col-h-inflow">자사몰 방문</span>
             </div>
             ${productSummaries.map(p => {
                 const revDeltaP = p.revenue !== null && p.prevRevenue !== null ? p.revenue - p.prevRevenue : null;

@@ -445,7 +445,9 @@ assert.match(funnelHtml, /전체 매출<\/span><strong>—<\/strong>/, '불완�
 assert.match(funnelHtml, /총 매출<\/span><strong>—<\/strong>/, '불완전 매출을 KPI 총매출로 표시하지 않는다');
 assert.match(funnelHtml, /ROAS<\/span><strong>—<\/strong>/, '매출 또는 광고비가 불완전하면 ROAS를 계산하지 않는다');
 const overviewHtml = vm.runInContext('renderOverviewDashboardView()', context);
-assert.match(overviewHtml, /메인 검색량/);
+assert.match(overviewHtml, /노출/);
+assert.match(overviewHtml, /유입/);
+assert.match(overviewHtml, /전환/);
 assert.match(overviewHtml, /총매출/);
 assert.match(overviewHtml, /ROAS/);
 assert.match(overviewHtml, /자사몰[\s\S]*스스[\s\S]*쿠팡/);
