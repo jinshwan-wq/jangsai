@@ -2029,23 +2029,36 @@ function completeCoupangValue(metric, suffix) {
 }
 
 function getOverviewMainKeywordMetric(product, metricDate) {
-    const keyword = OVERVIEW_MAIN_KEYWORDS[product?.slug];
-    if (!keyword) return { keyword: product?.name || '', value: null };
-    const normalizedKeyword = keyword.replace(/\s+/g, '').toLowerCase();
-    const matches = item =>
-        item.product_id === product.id &&
-        String(item.keyword || '').replace(/\s+/g, '').toLowerCase() === normalizedKeyword;
-    const snapshot = state.marketingSearchSnapshots.find(item =>
-        item.snapshot_date === metricDate && matches(item)
-    );
-    const daily = state.dailyKeywordMetrics.find(item =>
-        item.metric_date === metricDate && matches(item)
-    );
-    const metric = snapshot || daily;
-    if (metric) return { keyword, value: metricNumber(metric.search_volume) };
+    const mainKeyword = OVERVIEW_MAIN_KEYWORDS[product?.slug];
+    const allAliases = PRODUCT_KEYWORDS[product?.slug] || [];
+    const displayKeyword = mainKeyword || product?.name || '';
+
+    const normalizeKw = kw => String(kw || '').replace(/\s+/g, '').toLowerCase();
+
+    const matchItem = (item, dateProp) =>
+        item.product_id === product.id && item[dateProp] === metricDate;
+
+    if (mainKeyword) {
+        const mainNorm = normalizeKw(mainKeyword);
+        const mainMatch = item => matchItem(item, 'snapshot_date') && normalizeKw(item.keyword) === mainNorm;
+        const mainDaily = item => matchItem(item, 'metric_date') && normalizeKw(item.keyword) === mainNorm;
+        const hit = state.marketingSearchSnapshots.find(mainMatch) || state.dailyKeywordMetrics.find(mainDaily);
+        if (hit) return { keyword: displayKeyword, value: metricNumber(hit.search_volume) };
+    }
+
+    const aliasSet = new Set(allAliases.map(normalizeKw));
+    const aliasMatch = item => matchItem(item, 'snapshot_date') && aliasSet.has(normalizeKw(item.keyword));
+    const aliasDaily = item => matchItem(item, 'metric_date') && aliasSet.has(normalizeKw(item.keyword));
+    const aliasHit = state.marketingSearchSnapshots.find(aliasMatch) || state.dailyKeywordMetrics.find(aliasDaily);
+    if (aliasHit) return { keyword: displayKeyword, value: metricNumber(aliasHit.search_volume) };
+
     const productMetric = getProductMetricOnDate(product.id, metricDate);
-    const fallback = completeMetricValue(productMetric, 'keyword_search_volume');
-    return { keyword, value: fallback };
+    const raw = nullableMetricNumber(productMetric?.keyword_search_volume);
+    if (raw !== null && raw > 0) return { keyword: displayKeyword, value: raw };
+    if (productMetric && hasCollectedMetric(productMetric, 'keyword_search_volume')) {
+        return { keyword: displayKeyword, value: metricNumber(productMetric.keyword_search_volume) };
+    }
+    return { keyword: displayKeyword, value: null };
 }
 
 function renderOverviewConversionCell(productId, channelId, metricDate) {
@@ -2093,14 +2106,32 @@ function renderChannelConversionPanel(metricDate) {
     </section>`;
 }
 
+function getComparisonRevenue(metric) {
+    if (!metric) return null;
+    const c24 = nullableMetricNumber(metric.cafe24_revenue);
+    const ss = nullableMetricNumber(metric.smartstore_revenue);
+    const cpWing = nullableMetricNumber(metric.coupang_wing_revenue);
+    const cpGrowth = nullableMetricNumber(metric.coupang_growth_revenue);
+    const cpCombined = nullableMetricNumber(metric.coupang_revenue);
+    const cp = cpWing !== null || cpGrowth !== null
+        ? metricNumber(cpWing) + metricNumber(cpGrowth)
+        : cpCombined;
+    if (c24 !== null || ss !== null || cp !== null) {
+        return metricNumber(c24) + metricNumber(ss) + metricNumber(cp);
+    }
+    const reported = nullableMetricNumber(metric.reported_total_revenue);
+    if (reported !== null) return reported;
+    return isRevenueComplete(metric) ? getMetricRevenue(metric) : null;
+}
+
 function renderMarketingComparisonMatrix(metricDate) {
     const previousDate = shiftMetricDate(metricDate, -1);
 
     const productRows = state.marketingProducts.map((product, index) => {
         const current = getProductMetricOnDate(product.id, metricDate);
         const previous = getProductMetricOnDate(product.id, previousDate);
-        const currentRevenue = current && isRevenueComplete(current) ? getMetricRevenue(current) : null;
-        const previousRevenue = previous && isRevenueComplete(previous) ? getMetricRevenue(previous) : null;
+        const currentRevenue = current ? getComparisonRevenue(current) : null;
+        const previousRevenue = previous ? getComparisonRevenue(previous) : null;
         const currentAdSpend = completeMetricValue(current, 'ad_spend');
         const previousAdSpend = completeMetricValue(previous, 'ad_spend');
         const currentRoas = currentRevenue !== null && currentAdSpend > 0 ? percent(currentRevenue, currentAdSpend) : null;
@@ -2112,10 +2143,10 @@ function renderMarketingComparisonMatrix(metricDate) {
         const currentStoreVisits = getCafe24StoreVisits(product, metricDate);
         const previousStoreVisits = getCafe24StoreVisits(product, previousDate);
 
-        const curCafe24Rev = completeMetricValue(current, 'cafe24_revenue');
-        const prevCafe24Rev = completeMetricValue(previous, 'cafe24_revenue');
-        const curSSRev = completeMetricValue(current, 'smartstore_revenue');
-        const prevSSRev = completeMetricValue(previous, 'smartstore_revenue');
+        const curCafe24Rev = current ? nullableMetricNumber(current.cafe24_revenue) : null;
+        const prevCafe24Rev = previous ? nullableMetricNumber(previous.cafe24_revenue) : null;
+        const curSSRev = current ? nullableMetricNumber(current.smartstore_revenue) : null;
+        const prevSSRev = previous ? nullableMetricNumber(previous.smartstore_revenue) : null;
         const curWingRev = current ? nullableMetricNumber(current.coupang_wing_revenue) : null;
         const prevWingRev = previous ? nullableMetricNumber(previous.coupang_wing_revenue) : null;
         const curGrowthRev = current ? nullableMetricNumber(current.coupang_growth_revenue) : null;
@@ -2172,15 +2203,24 @@ function renderMarketingComparisonMatrix(metricDate) {
         </div>
         <div class="marketing-comparison-scroll">
             <table class="marketing-comparison-table">
+                <colgroup>
+                    <col class="col-product">
+                    <col span="2" class="col-group-exposure">
+                    <col span="4" class="col-group-inflow">
+                    <col span="4" class="col-group-sales">
+                    <col span="4" class="col-group-revenue">
+                    <col span="3" class="col-group-conversion">
+                    <col span="2" class="col-group-performance">
+                </colgroup>
                 <thead>
                     <tr class="comparison-groups">
                         <th rowspan="2">브랜드·제품</th>
-                        <th colspan="2">노출</th>
-                        <th colspan="4">유입</th>
-                        <th colspan="4">판매량</th>
-                        <th colspan="4">매출</th>
-                        <th colspan="3">전환율</th>
-                        <th colspan="2">성과</th>
+                        <th colspan="2" class="group-exposure">노출</th>
+                        <th colspan="4" class="group-inflow">유입</th>
+                        <th colspan="4" class="group-sales">판매량</th>
+                        <th colspan="4" class="group-revenue">매출</th>
+                        <th colspan="3" class="group-conversion">전환율</th>
+                        <th colspan="2" class="group-performance">성과</th>
                     </tr>
                     <tr>
                         <th>메인 검색량</th><th>블로그</th>

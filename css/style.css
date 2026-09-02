@@ -2975,6 +2975,13 @@ textarea.form-input {
     font-weight: 800;
 }
 
+.marketing-comparison-table thead tr:last-child th:nth-child(-n+2) { background: rgba(139, 92, 246, 0.12); }
+.marketing-comparison-table thead tr:last-child th:nth-child(n+3):nth-child(-n+6) { background: rgba(59, 130, 246, 0.12); }
+.marketing-comparison-table thead tr:last-child th:nth-child(n+7):nth-child(-n+10) { background: rgba(16, 185, 129, 0.12); }
+.marketing-comparison-table thead tr:last-child th:nth-child(n+11):nth-child(-n+14) { background: rgba(245, 158, 11, 0.12); }
+.marketing-comparison-table thead tr:last-child th:nth-child(n+15):nth-child(-n+17) { background: rgba(236, 72, 153, 0.12); }
+.marketing-comparison-table thead tr:last-child th:nth-child(n+18) { background: rgba(99, 102, 241, 0.12); }
+
 .marketing-comparison-table thead .comparison-groups th {
     color: var(--text-secondary);
     text-align: center;
@@ -3822,7 +3829,6 @@ textarea.form-input {
 .marketing-comparison-table tfoot td {
     padding: 12px 12px;
     border-top: 2px solid var(--glass-border-hover);
-    background: rgba(99, 102, 241, 0.06);
     font-weight: 800;
 }
 
@@ -3831,6 +3837,28 @@ textarea.form-input {
     color: var(--text-primary);
     font-size: 0.82rem;
 }
+
+/* --- Comparison Table Column Group Tints --- */
+.marketing-comparison-table .col-group-exposure { background: rgba(139, 92, 246, 0.045); }
+.marketing-comparison-table .col-group-inflow   { background: rgba(59, 130, 246, 0.045); }
+.marketing-comparison-table .col-group-sales     { background: rgba(16, 185, 129, 0.045); }
+.marketing-comparison-table .col-group-revenue   { background: rgba(245, 158, 11, 0.045); }
+.marketing-comparison-table .col-group-conversion { background: rgba(236, 72, 153, 0.045); }
+.marketing-comparison-table .col-group-performance { background: rgba(99, 102, 241, 0.045); }
+
+.marketing-comparison-table .comparison-groups .group-exposure { background: rgba(139, 92, 246, 0.18); color: #c4b5fd; }
+.marketing-comparison-table .comparison-groups .group-inflow   { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
+.marketing-comparison-table .comparison-groups .group-sales     { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+.marketing-comparison-table .comparison-groups .group-revenue   { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+.marketing-comparison-table .comparison-groups .group-conversion { background: rgba(236, 72, 153, 0.18); color: #f9a8d4; }
+.marketing-comparison-table .comparison-groups .group-performance { background: rgba(99, 102, 241, 0.18); color: #a5b4fc; }
+
+.marketing-comparison-table tfoot .col-group-exposure { background: rgba(139, 92, 246, 0.08); }
+.marketing-comparison-table tfoot .col-group-inflow   { background: rgba(59, 130, 246, 0.08); }
+.marketing-comparison-table tfoot .col-group-sales     { background: rgba(16, 185, 129, 0.08); }
+.marketing-comparison-table tfoot .col-group-revenue   { background: rgba(245, 158, 11, 0.08); }
+.marketing-comparison-table tfoot .col-group-conversion { background: rgba(236, 72, 153, 0.08); }
+.marketing-comparison-table tfoot .col-group-performance { background: rgba(99, 102, 241, 0.08); }
 
 /* --- Report Date Nav --- */
 .report-date-nav {
