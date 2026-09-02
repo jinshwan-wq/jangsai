@@ -3839,26 +3839,32 @@ textarea.form-input {
 }
 
 /* --- Comparison Table Column Group Tints --- */
-.marketing-comparison-table .col-group-exposure { background: rgba(139, 92, 246, 0.045); }
-.marketing-comparison-table .col-group-inflow   { background: rgba(59, 130, 246, 0.045); }
-.marketing-comparison-table .col-group-sales     { background: rgba(16, 185, 129, 0.045); }
-.marketing-comparison-table .col-group-revenue   { background: rgba(245, 158, 11, 0.045); }
-.marketing-comparison-table .col-group-conversion { background: rgba(236, 72, 153, 0.045); }
-.marketing-comparison-table .col-group-performance { background: rgba(99, 102, 241, 0.045); }
+.marketing-comparison-table .comparison-groups .group-exposure    { background: rgba(139, 92, 246, 0.18); color: #c4b5fd; }
+.marketing-comparison-table .comparison-groups .group-inflow      { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
+.marketing-comparison-table .comparison-groups .group-sales        { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+.marketing-comparison-table .comparison-groups .group-revenue      { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+.marketing-comparison-table .comparison-groups .group-conversion   { background: rgba(236, 72, 153, 0.18); color: #f9a8d4; }
+.marketing-comparison-table .comparison-groups .group-performance  { background: rgba(99, 102, 241, 0.18); color: #a5b4fc; }
 
-.marketing-comparison-table .comparison-groups .group-exposure { background: rgba(139, 92, 246, 0.18); color: #c4b5fd; }
-.marketing-comparison-table .comparison-groups .group-inflow   { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
-.marketing-comparison-table .comparison-groups .group-sales     { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
-.marketing-comparison-table .comparison-groups .group-revenue   { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
-.marketing-comparison-table .comparison-groups .group-conversion { background: rgba(236, 72, 153, 0.18); color: #f9a8d4; }
-.marketing-comparison-table .comparison-groups .group-performance { background: rgba(99, 102, 241, 0.18); color: #a5b4fc; }
+.marketing-comparison-table tbody td:nth-child(2),
+.marketing-comparison-table tbody td:nth-child(3),
+.marketing-comparison-table tfoot td:nth-child(2),
+.marketing-comparison-table tfoot td:nth-child(3) { background: rgba(139, 92, 246, 0.04); }
 
-.marketing-comparison-table tfoot .col-group-exposure { background: rgba(139, 92, 246, 0.08); }
-.marketing-comparison-table tfoot .col-group-inflow   { background: rgba(59, 130, 246, 0.08); }
-.marketing-comparison-table tfoot .col-group-sales     { background: rgba(16, 185, 129, 0.08); }
-.marketing-comparison-table tfoot .col-group-revenue   { background: rgba(245, 158, 11, 0.08); }
-.marketing-comparison-table tfoot .col-group-conversion { background: rgba(236, 72, 153, 0.08); }
-.marketing-comparison-table tfoot .col-group-performance { background: rgba(99, 102, 241, 0.08); }
+.marketing-comparison-table tbody td:nth-child(n+4):nth-child(-n+7),
+.marketing-comparison-table tfoot td:nth-child(n+4):nth-child(-n+7) { background: rgba(59, 130, 246, 0.04); }
+
+.marketing-comparison-table tbody td:nth-child(n+8):nth-child(-n+11),
+.marketing-comparison-table tfoot td:nth-child(n+8):nth-child(-n+11) { background: rgba(16, 185, 129, 0.04); }
+
+.marketing-comparison-table tbody td:nth-child(n+12):nth-child(-n+15),
+.marketing-comparison-table tfoot td:nth-child(n+12):nth-child(-n+15) { background: rgba(245, 158, 11, 0.04); }
+
+.marketing-comparison-table tbody td:nth-child(n+16):nth-child(-n+18),
+.marketing-comparison-table tfoot td:nth-child(n+16):nth-child(-n+18) { background: rgba(236, 72, 153, 0.04); }
+
+.marketing-comparison-table tbody td:nth-child(n+19),
+.marketing-comparison-table tfoot td:nth-child(n+19) { background: rgba(99, 102, 241, 0.04); }
 
 /* --- Report Date Nav --- */
 .report-date-nav {
