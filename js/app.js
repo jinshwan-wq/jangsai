@@ -2282,28 +2282,26 @@ function renderOverviewDashboardView() {
         const c24Rev = metric ? nullableMetricNumber(metric.cafe24_revenue) : null;
         const ssRev = metric ? nullableMetricNumber(metric.smartstore_revenue) : null;
         const cpRev = metric ? completeCoupangValue(metric, 'revenue') : null;
-        const orders = metric && isSalesComplete(metric) ? getMetricSales(metric) : null;
-        const prevOrders = prevMetric && isSalesComplete(prevMetric) ? getMetricSales(prevMetric) : null;
-        const blogViews = completeMetricValue(metric, 'blog_views');
-        const visits = metric ? getChannelVisits(metric, MARKETING_CHANNELS[0]) : null;
-        return { product, metric, revenue, prevRevenue, c24Rev, ssRev, cpRev, orders, prevOrders, blogViews, visits };
+        const c24Visits = metric ? getChannelVisits(metric, MARKETING_CHANNELS[0]) : null;
+        const ssVisits = metric ? getChannelVisits(metric, MARKETING_CHANNELS[1]) : null;
+        const cpVisits = metric ? completeCoupangValue(metric, 'visits') : null;
+        return { product, revenue, prevRevenue, c24Rev, ssRev, cpRev, c24Visits, ssVisits, cpVisits };
     });
 
     const safeSum = vals => { const v = vals.filter(x => x !== null && Number.isFinite(x)); return v.length ? v.reduce((a,b) => a+b, 0) : null; };
     const totalRevenue = safeSum(productSummaries.map(p => p.revenue));
     const totalPrevRevenue = safeSum(productSummaries.map(p => p.prevRevenue));
-    const totalOrders = safeSum(productSummaries.map(p => p.orders));
-    const totalAdSpend = safeSum(productSummaries.map(p => completeMetricValue(p.metric, 'ad_spend')));
-    const totalRoas = totalRevenue !== null && totalAdSpend > 0 ? percent(totalRevenue, totalAdSpend) : null;
-
-    const convChannels = ['cafe24', 'smartstore', 'coupang'];
-    const convSummaries = convChannels.map(ch => {
-        const s = getChannelConversionSummary(productIds, ch, expectedDate);
-        return { id: ch, rate: s.current?.rate ?? null, avg: s.average?.rate ?? null };
-    });
-    const convLabels = { cafe24: '자사몰', smartstore: '스스', coupang: '쿠팡' };
-
     const revDelta = totalRevenue !== null && totalPrevRevenue !== null ? totalRevenue - totalPrevRevenue : null;
+
+    const totalInflow = safeSum(productSummaries.flatMap(p => [p.c24Visits, p.ssVisits, p.cpVisits]));
+    const inflowParts = [
+        { label: '자사몰', value: safeSum(productSummaries.map(p => p.c24Visits)) },
+        { label: '스마트스토어', value: safeSum(productSummaries.map(p => p.ssVisits)) },
+        { label: '쿠팡', value: safeSum(productSummaries.map(p => p.cpVisits)) },
+    ];
+
+    const allConvSummaries = getChannelConversionSummary(productIds, 'cafe24', expectedDate);
+    const totalConvRate = allConvSummaries.current?.rate ?? null;
 
     return `
     ${renderNavbar()}
@@ -2343,19 +2341,12 @@ function renderOverviewDashboardView() {
         <div class="overview-two-col">
             <section class="overview-section overview-section-inflow">
                 <div class="overview-section-label"><i class="ri-route-line"></i> 유입</div>
-                <div class="overview-inflow-grid">
-                    ${productSummaries.map(p => `
-                    <div class="overview-inflow-item">
-                        <span>${escapeHtml(p.product.name)}</span>
-                        <div>
-                            <strong>${p.visits !== null ? formatMetric(p.visits) : '—'}</strong>
-                            <small>자사몰</small>
-                        </div>
-                        <div>
-                            <strong>${p.blogViews !== null ? formatMetric(p.blogViews) : '—'}</strong>
-                            <small>블로그</small>
-                        </div>
-                    </div>`).join('')}
+                <div class="overview-inflow-total">
+                    <strong>${totalInflow !== null ? formatMetric(totalInflow) : '—'}</strong>
+                    <span>전체 유입</span>
+                </div>
+                <div class="overview-inflow-split">
+                    ${inflowParts.filter(p => p.value !== null).map(p => `<span>${escapeHtml(p.label)} <b>${formatMetric(p.value)}</b></span>`).join('')}
                 </div>
             </section>
 
@@ -2368,26 +2359,12 @@ function renderOverviewDashboardView() {
                         ${revDelta !== null ? `<small class="${revDelta >= 0 ? 'up' : 'down'}">${revDelta >= 0 ? '▲' : '▼'} ${formatWon(Math.abs(revDelta))}</small>` : ''}
                     </div>
                     <div class="overview-conv-kpi">
-                        <span>주문</span>
-                        <strong>${totalOrders !== null ? `${formatMetric(totalOrders)}건` : '—'}</strong>
+                        <span>총전환율</span>
+                        <strong>${totalConvRate !== null ? `${totalConvRate.toFixed(1)}%` : '—'}</strong>
                     </div>
-                    ${convSummaries.map(c => `
-                    <div class="overview-conv-kpi overview-conv-rate">
-                        <span>${convLabels[c.id]}</span>
-                        <strong>${c.rate !== null ? `${c.rate.toFixed(1)}%` : '—'}</strong>
-                        ${c.avg !== null ? `<small class="same">7일 ${c.avg.toFixed(1)}%</small>` : ''}
-                    </div>`).join('')}
                 </div>
             </section>
         </div>
-
-        <section class="overview-section overview-section-performance">
-            <div class="overview-section-label"><i class="ri-bar-chart-grouped-line"></i> 성과</div>
-            <div class="overview-perf-strip">
-                <div class="overview-perf-kpi"><span>광고비</span><strong>${totalAdSpend !== null ? formatWon(totalAdSpend) : '—'}</strong></div>
-                <div class="overview-perf-kpi"><span>ROAS</span><strong>${totalRoas !== null ? `${totalRoas.toFixed(0)}%` : '—'}</strong></div>
-            </div>
-        </section>
 
         <section class="overview-product-list">
             <div class="overview-product-header">
@@ -2396,13 +2373,9 @@ function renderOverviewDashboardView() {
                 <span class="col-detail col-h-conv">자사몰</span>
                 <span class="col-detail col-h-conv">스스</span>
                 <span class="col-detail col-h-conv">쿠팡</span>
-                <span class="col-orders col-h-conv">주문</span>
-                <span class="col-blog col-h-exposure">블로그</span>
-                <span class="col-visits col-h-inflow">자사몰 방문</span>
             </div>
             ${productSummaries.map(p => {
                 const revDeltaP = p.revenue !== null && p.prevRevenue !== null ? p.revenue - p.prevRevenue : null;
-                const ordDeltaP = p.orders !== null && p.prevOrders !== null ? p.orders - p.prevOrders : null;
                 return `
             <div class="overview-product-row" onclick="openProductReport('${p.product.id}')">
                 <span class="col-name"><small>${escapeHtml(p.product.brand)}</small><strong>${escapeHtml(p.product.name)}</strong></span>
@@ -2413,9 +2386,6 @@ function renderOverviewDashboardView() {
                 <span class="col-detail">${p.c24Rev !== null ? formatWon(p.c24Rev) : '—'}</span>
                 <span class="col-detail">${p.ssRev !== null ? formatWon(p.ssRev) : '—'}</span>
                 <span class="col-detail">${p.cpRev !== null ? formatWon(p.cpRev) : '—'}</span>
-                <span class="col-orders">${p.orders !== null ? `${formatMetric(p.orders)}건` : '—'}${ordDeltaP !== null ? ` <small class="${ordDeltaP >= 0 ? 'up' : 'down'}">${ordDeltaP >= 0 ? '+' : ''}${ordDeltaP}</small>` : ''}</span>
-                <span class="col-blog">${p.blogViews !== null ? formatMetric(p.blogViews) : '—'}</span>
-                <span class="col-visits">${p.visits !== null ? formatMetric(p.visits) : '—'}</span>
             </div>`;
             }).join('')}
             <div class="overview-product-row overview-product-total">
@@ -2424,9 +2394,6 @@ function renderOverviewDashboardView() {
                 <span class="col-detail">${safeSum(productSummaries.map(p=>p.c24Rev)) !== null ? formatWon(safeSum(productSummaries.map(p=>p.c24Rev))) : ''}</span>
                 <span class="col-detail">${safeSum(productSummaries.map(p=>p.ssRev)) !== null ? formatWon(safeSum(productSummaries.map(p=>p.ssRev))) : ''}</span>
                 <span class="col-detail">${safeSum(productSummaries.map(p=>p.cpRev)) !== null ? formatWon(safeSum(productSummaries.map(p=>p.cpRev))) : ''}</span>
-                <span class="col-orders">${totalOrders !== null ? `${formatMetric(totalOrders)}건` : ''}</span>
-                <span class="col-blog"></span>
-                <span class="col-visits"></span>
             </div>
         </section>
     </main>`;
