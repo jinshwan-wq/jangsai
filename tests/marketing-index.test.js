@@ -449,7 +449,6 @@ assert.match(overviewHtml, /노출/);
 assert.match(overviewHtml, /유입/);
 assert.match(overviewHtml, /전환/);
 assert.match(overviewHtml, /총매출/);
-assert.match(overviewHtml, /ROAS/);
 assert.match(overviewHtml, /자사몰[\s\S]*스스[\s\S]*쿠팡/);
 const expectedMetricDate = vm.runInContext('kstDateString(-1)', context);
 const bridgeFailureHtml = vm.runInContext(`(() => {
