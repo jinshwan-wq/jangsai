@@ -46,6 +46,40 @@ test('쿠팡 전일 유입은 KST 12시 40분 이후에만 수집한다', async 
   );
 });
 
+test('쿠팡 매출은 KST 09:30부터, 방문자는 12:40부터 수집한다', async () => {
+  const { providerReadyAt } = await contractPromise;
+  assert.equal(
+    providerReadyAt('coupang_sales', '2026-08-28', new Date('2026-08-29T00:29:59Z')),
+    false,
+    '09:29 KST에 쿠팡 매출 미허용'
+  );
+  assert.equal(
+    providerReadyAt('coupang_sales', '2026-08-28', new Date('2026-08-29T00:30:00Z')),
+    true,
+    '09:30 KST에 쿠팡 매출 허용'
+  );
+  assert.equal(
+    providerReadyAt('coupang_visits', '2026-08-28', new Date('2026-08-29T00:30:00Z')),
+    false,
+    '09:30 KST에 쿠팡 방문자 미허용'
+  );
+  assert.equal(
+    providerReadyAt('coupang_visits', '2026-08-28', new Date('2026-08-29T03:40:00Z')),
+    true,
+    '12:40 KST에 쿠팡 방문자 허용'
+  );
+  assert.equal(
+    providerReadyAt('coupang_sales', '2026-08-27', new Date('2026-08-29T00:00:00Z')),
+    true,
+    '과거 누락일 쿠팡 매출은 즉시 허용'
+  );
+  assert.equal(
+    providerReadyAt('coupang_visits', '2026-08-27', new Date('2026-08-29T00:00:00Z')),
+    true,
+    '과거 누락일 쿠팡 방문자도 즉시 허용'
+  );
+});
+
 test('Bridge 오류는 즉시 반복하지 않고 로그인 오류를 차단 상태로 보존한다', async () => {
   const { isActionableJob, shouldRequeueMissingJob } = await contractPromise;
   const now = new Date('2026-08-29T05:00:00Z');
@@ -105,6 +139,29 @@ test('완성도 표시가 없는 로그인 채널만 계정별 작업으로 만�
   ]), '2026-08-27');
   assert.deepEqual(tasks.map(task => `${task.provider}:${task.account}`), ['smartstore:yural']);
   assert.equal(tasks[0].missing_fields_by_product.length, 2);
+});
+
+test('매출만 완성된 쿠팡은 방문자 작업만 남긴다', async () => {
+  const { deriveMissingTasks } = await contractPromise;
+  const completeSalesOnly = {
+    data_completeness: {
+      coupang_wing_orders: true,
+      coupang_wing_revenue: true,
+      coupang_growth_orders: true,
+      coupang_growth_revenue: true,
+    },
+  };
+  const tasks = deriveMissingTasks(new Map([
+    ['innerium-gala431', completeSalesOnly],
+    ['innerium-minti431', completeSalesOnly],
+    ['yural-tonggam-cream', completeSalesOnly],
+    ['yural-myeongga-bonhwan', completeSalesOnly],
+  ]), '2026-08-27');
+  const coupangTasks = tasks.filter(task => task.provider.startsWith('coupang'));
+  assert.equal(coupangTasks.every(task => task.provider === 'coupang_visits'), true,
+    '매출이 완성되면 coupang_visits 작업만 남는다');
+  const smartstoreTasks = tasks.filter(task => task.provider === 'smartstore');
+  assert.equal(smartstoreTasks.length, 2, '스마트스토어 작업은 모두 생성된다');
 });
 
 test('스마트스토어는 추적 제품과 미분류 상품을 포함한 화면 합계를 검증한다', async () => {
@@ -215,5 +272,123 @@ test('쿠팡 반품 음수는 허용하되 공식 전체 합계를 강제한다'
       wing: { ...metrics[0].wing, revenue: metrics[0].wing.gross_sales },
     }, metrics[1]], totals),
     /판매금액\(순\)\+배송비-판매자 부담 할인·쿠폰이어야 합니다/,
+  );
+});
+
+test('쿠팡 매출만 제출하면 방문수는 NULL로 유지된다', async () => {
+  const { COUPANG_REVENUE_BASIS, normalizeCoupangSubmission, isCoupangSalesOnly } = await contractPromise;
+  const salesOnlyMetrics = [
+    {
+      product_slug: 'innerium-gala431',
+      wing: { orders: 3, revenue: 150000 },
+      growth: { orders: 1, revenue: 50000 },
+    },
+    {
+      product_slug: 'innerium-minti431',
+      wing: { orders: 0, revenue: 0 },
+      growth: { orders: 2, revenue: 80000 },
+    },
+  ];
+  const salesOnlyTotals = {
+    combined: { orders: 6, revenue: 280000 },
+  };
+  const result = normalizeCoupangSubmission('innerium', salesOnlyMetrics, salesOnlyTotals);
+  assert.equal(result.sales_only, true, 'sales_only 플래그가 true여야 한다');
+  assert.equal(isCoupangSalesOnly(result), true);
+  assert.equal(result.metrics[0].wing.visits, null, '방문수는 null이어야 한다');
+  assert.equal(result.metrics[0].wing.conversion_rate, null, '전환율도 null이어야 한다');
+  assert.equal(result.metrics[0].wing.orders, 3);
+  assert.equal(result.metrics[0].wing.revenue, 150000);
+  assert.equal(result.metrics[0].wing.revenue_basis, COUPANG_REVENUE_BASIS);
+  assert.equal(result.metrics[0].wing.gross_sales, null, 'v9 상세 필드 없이 매출만 제출 가능');
+  assert.equal(result.metrics[0].growth.orders, 1);
+  assert.equal(result.metrics[0].growth.revenue, 50000);
+  assert.equal(result.source_totals.combined.visits, null);
+  assert.equal(result.source_totals.combined.orders, 6);
+  assert.equal(result.source_totals.combined.revenue, 280000);
+});
+
+test('쿠팡 매출만 제출 시 합계를 검증한다', async () => {
+  const { normalizeCoupangSubmission } = await contractPromise;
+  assert.throws(
+    () => normalizeCoupangSubmission('innerium', [
+      {
+        product_slug: 'innerium-gala431',
+        wing: { orders: 3, revenue: 150000 },
+        growth: { orders: 1, revenue: 50000 },
+      },
+      {
+        product_slug: 'innerium-minti431',
+        wing: { orders: 0, revenue: 0 },
+        growth: { orders: 2, revenue: 80000 },
+      },
+    ], {
+      combined: { orders: 6, revenue: 999999 },
+    }),
+    /합계가 일치하지 않습니다/,
+    '매출 합계가 다르면 거부한다'
+  );
+});
+
+test('쿠팡 매출+v9 상세 필드를 방문수 없이 제출할 수 있다', async () => {
+  const { normalizeCoupangSubmission } = await contractPromise;
+  const metrics = [
+    {
+      product_slug: 'innerium-gala431',
+      wing: {
+        orders: 3,
+        gross_sales: 200000,
+        refund_amount: 50000,
+        net_sales: 150000,
+        shipping_fee: 3000,
+        seller_discount: 1000,
+        revenue: 152000,
+      },
+      growth: {
+        orders: 1,
+        gross_sales: 60000,
+        refund_amount: 10000,
+        net_sales: 50000,
+        shipping_fee: 0,
+        seller_discount: 0,
+        revenue: 50000,
+      },
+    },
+    {
+      product_slug: 'innerium-minti431',
+      wing: { orders: 0, revenue: 0 },
+      growth: { orders: 0, revenue: 0 },
+    },
+  ];
+  const totals = {
+    combined: { orders: 4, revenue: 202000 },
+  };
+  const result = normalizeCoupangSubmission('innerium', metrics, totals);
+  assert.equal(result.sales_only, true);
+  assert.equal(result.metrics[0].wing.visits, null);
+  assert.equal(result.metrics[0].wing.gross_sales, 200000, 'v9 상세 필드가 보존된다');
+  assert.equal(result.metrics[0].wing.revenue, 152000);
+  assert.equal(result.metrics[0].wing.conversion_rate, null, '방문수 없이 전환율도 null');
+});
+
+test('방문수를 0으로 채워 제출하면 sales_only가 아닌 전체 제출로 처리한다', async () => {
+  const { normalizeCoupangSubmission } = await contractPromise;
+  assert.throws(
+    () => normalizeCoupangSubmission('innerium', [
+      {
+        product_slug: 'innerium-gala431',
+        wing: { visits: 0, orders: 3, revenue: 150000 },
+        growth: { visits: 0, orders: 1, revenue: 50000 },
+      },
+      {
+        product_slug: 'innerium-minti431',
+        wing: { visits: 0, orders: 0, revenue: 0 },
+        growth: { visits: 0, orders: 0, revenue: 0 },
+      },
+    ], {
+      combined: { visits: 0, orders: 4, revenue: 200000 },
+    }),
+    /판매금액\(총\) 또는 매출\(revenue\)/,
+    'visits=0이면 salesOnly가 아니므로 v9 필드가 필요하다'
   );
 });

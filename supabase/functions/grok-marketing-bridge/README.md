@@ -92,6 +92,40 @@ https://pfmrqsfmkdnhzjimqocr.supabase.co/functions/v1/grok-marketing-bridge
 판매자배송(`wing`)과 로켓그로스(`growth`)를 제품별로 나누고, 화면 상단의 공식
 전체 합계 카드도 함께 제출합니다. 반품일 수 있으므로 판매량·매출은 음수를 허용합니다.
 
+### 09:30 매출만 제출 (v9)
+
+방문수(`visits`)와 전환율(`conversion_rate`)을 생략하면 매출만 먼저 저장됩니다.
+방문수는 DB에서 NULL로 유지되며 0으로 채워지지 않습니다. v9 상세 필드
+(`gross_sales`, `refund_amount`, `net_sales`, `shipping_fee`, `seller_discount`)도
+생략 가능하며, 이 경우 `orders`와 `revenue`만 필수입니다.
+
+```json
+{
+  "action": "submit",
+  "job_id": "<작업 ID>",
+  "metrics": [
+    {
+      "product_slug": "yural-tonggam-cream",
+      "wing": { "orders": 1, "revenue": 50000 },
+      "growth": { "orders": 2, "revenue": 100000 }
+    },
+    {
+      "product_slug": "yural-myeongga-bonhwan",
+      "wing": { "orders": 0, "revenue": 0 },
+      "growth": { "orders": 1, "revenue": 30000 }
+    }
+  ],
+  "source_totals": {
+    "combined": { "orders": 4, "revenue": 180000 }
+  }
+}
+```
+
+### 12:40 방문자+매출 전체 제출
+
+방문수가 확정되면 전체 필드를 제출합니다. 기존 매출이 이미 저장되어 있으면
+방문자 제출 시 매출을 0으로 덮어쓰지 않습니다.
+
 ```json
 {
   "action": "submit",

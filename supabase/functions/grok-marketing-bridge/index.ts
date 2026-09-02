@@ -3,6 +3,7 @@ import {
   ACCOUNT_PRODUCTS,
   deriveMissingTasks,
   isActionableJob,
+  isCoupangSalesOnly,
   kstYesterday,
   normalizeSubmission,
   providerReadyAt,
@@ -13,7 +14,7 @@ import {
 } from "./contract.mjs";
 
 const CLIENT_KEY = "grok-marketing-ops";
-const RUNBOOK_VERSION = 8;
+const RUNBOOK_VERSION = 9;
 const BACKLOG_DAYS = 7;
 const PRODUCT_SLUGS = Object.values(ACCOUNT_PRODUCTS).flat().map((
   product: { slug: string },
@@ -76,7 +77,7 @@ function operatorRunbook() {
     role: "JangsAI 마케팅 자동수집 보조 운영자",
     timezone: "Asia/Seoul",
     daily_schedule:
-      "매일 09:30 스마트스토어·확인 가능한 매출, 12:40 쿠팡 방문자, 13:00 최종 재검증 KST",
+      "매일 09:30 스마트스토어·쿠팡 주문매출, 12:40 쿠팡 방문자·전환율, 13:00 최종 재검증 KST",
     objective:
       "로그인 채널의 전일 유입·전환·주문·매출을 수집하고 검증 결과를 대시보드 DB에 기록한다.",
     persistent_sessions: SESSION_KEYS,
@@ -94,9 +95,10 @@ function operatorRunbook() {
       "세션 확인 후 heartbeat로 sessions 상태를 전송한다.",
     ],
     daily_workflow: [
-      "09:30 KST에 metric_date를 생략한 sync를 호출해 최근 7일 스마트스토어 유입·전환·주문·매출 누락을 처리한다.",
-      "쿠팡 전일 방문자 데이터는 12:40 KST 전에는 확정값이 아니므로 그 전에 쿠팡 job을 처리하지 않는다.",
-      "12:40 KST에 sync를 다시 호출해 최근 7일 쿠팡 누락을 처리한다.",
+      "09:30 KST에 metric_date를 생략한 sync를 호출해 최근 7일 스마트스토어·쿠팡 주문매출 누락을 처리한다.",
+      "09:30 쿠팡 매출 수집 시 방문수(visits)와 전환율(conversion_rate)은 생략하고 주문·매출만 제출한다. 방문수가 확정되지 않았으므로 0으로 채우지 않는다.",
+      "쿠팡 전일 방문자 데이터는 12:40 KST 전에는 확정값이 아니므로 그 전에 쿠팡 방문자 job을 처리하지 않는다.",
+      "12:40 KST에 sync를 다시 호출해 최근 7일 쿠팡 방문자·전환율 누락을 처리한다. 기존 매출을 0으로 덮어쓰지 않는다.",
       "13:00 KST에 sync를 마지막으로 호출해 실패 또는 로그인 복구 후 남은 job을 재처리한다.",
       "응답 jobs가 없으면 데이터 수정 없이 dashboard_snapshot으로 일일 요약만 작성한다.",
       "각 job을 claim한 뒤 지정 provider/account 화면을 연다. 스마트스토어는 통합매니저 세션 안에서 스토어만 전환한다.",
@@ -444,39 +446,47 @@ function jobContract(provider: string) {
     metrics: [{
       product_slug: "계정에 속한 제품 slug",
       wing: {
-        visits: "정수",
+        visits: "정수 (09:30 매출만 수집 시 생략 가능, null 유지)",
         orders: "정수",
-        gross_sales: "판매금액(총), 0 이상의 정수",
-        refund_amount: "환불금액, 0 이상의 정수",
-        net_sales: "판매금액(순) = 판매금액(총) - 환불금액",
-        shipping_fee: "배송비, 0 이상의 정수",
-        seller_discount: "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외",
+        gross_sales:
+          "판매금액(총), 0 이상의 정수 (v9 상세 필드; 매출만 수집 시 revenue만으로 대체 가능)",
+        refund_amount: "환불금액, 0 이상의 정수 (v9 상세 필드)",
+        net_sales: "판매금액(순) = 판매금액(총) - 환불금액 (v9 상세 필드)",
+        shipping_fee: "배송비, 0 이상의 정수 (v9 상세 필드)",
+        seller_discount:
+          "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외 (v9 상세 필드)",
         revenue: "판매금액(순) + 배송비 - 판매자 부담 할인·쿠폰",
-        conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
+        conversion_rate:
+          "화면의 공식 구매전환율(%), 방문수 생략 시 함께 생략",
       },
       growth: {
-        visits: "정수",
+        visits: "정수 (09:30 매출만 수집 시 생략 가능, null 유지)",
         orders: "정수",
-        gross_sales: "판매금액(총), 0 이상의 정수",
-        refund_amount: "환불금액, 0 이상의 정수",
-        net_sales: "판매금액(순) = 판매금액(총) - 환불금액",
-        shipping_fee: "배송비, 0 이상의 정수",
-        seller_discount: "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외",
+        gross_sales:
+          "판매금액(총), 0 이상의 정수 (v9 상세 필드; 매출만 수집 시 revenue만으로 대체 가능)",
+        refund_amount: "환불금액, 0 이상의 정수 (v9 상세 필드)",
+        net_sales: "판매금액(순) = 판매금액(총) - 환불금액 (v9 상세 필드)",
+        shipping_fee: "배송비, 0 이상의 정수 (v9 상세 필드)",
+        seller_discount:
+          "판매자 부담 할인·쿠폰만 합산, 쿠팡 부담 혜택 제외 (v9 상세 필드)",
         revenue: "판매금액(순) + 배송비 - 판매자 부담 할인·쿠폰",
-        conversion_rate: "화면의 공식 구매전환율(%), 표시되지 않으면 생략",
+        conversion_rate:
+          "화면의 공식 구매전환율(%), 방문수 생략 시 함께 생략",
       },
     }],
     source_totals: {
       combined: {
-        visits: "공식 방문자 카드",
+        visits:
+          "공식 방문자 카드 (매출만 수집 시 생략 가능)",
         orders: "공식 판매량 카드",
-        gross_sales: "공식 판매금액(총) 합계",
-        refund_amount: "공식 환불금액 합계",
-        net_sales: "공식 판매금액(순) 합계",
-        shipping_fee: "공식 배송비 합계",
-        seller_discount: "공식 판매자 부담 할인·쿠폰 합계",
+        gross_sales: "공식 판매금액(총) 합계 (v9 상세 필드)",
+        refund_amount: "공식 환불금액 합계 (v9 상세 필드)",
+        net_sales: "공식 판매금액(순) 합계 (v9 상세 필드)",
+        shipping_fee: "공식 배송비 합계 (v9 상세 필드)",
+        seller_discount: "공식 판매자 부담 할인·쿠폰 합계 (v9 상세 필드)",
         revenue: "판매금액(순)+배송비-판매자 부담 할인·쿠폰 합계",
-        conversion_rate: "공식 전체 구매전환율(%), 표시되지 않으면 생략",
+        conversion_rate:
+          "공식 전체 구매전환율(%), 방문수 생략 시 함께 생략",
       },
     },
   };
@@ -492,9 +502,11 @@ function publicJob(job: Record<string, unknown>) {
     status: job.status,
     attempts: job.attempts,
     source_url: (SOURCE_URLS as Record<string, string>)[provider],
-    available_after_kst: provider === "coupang" ? "12:40" : "09:30",
+    available_after_kst: provider === "coupang"
+      ? "09:30 (매출) / 12:40 (방문자)"
+      : "09:30",
     navigation_note: provider === "coupang"
-      ? "비밀번호 변경 화면이면 변경하지 말고 같은 세션에서 https://wing.coupang.com 을 먼저 연 뒤 source_url을 다시 연다."
+      ? "09:30에는 주문·매출만 수집하고 방문수(visits)를 생략한다. 12:40 이후에는 방문자·전환율도 함께 제출한다. 비밀번호 변경 화면이면 변경하지 말고 같은 세션에서 https://wing.coupang.com 을 먼저 연 뒤 source_url을 다시 연다."
       : "스토어분석에서 전일 기준 제품별 방문수·상품결제건수와 판매수량·결제금액을 모두 읽는다.",
     payload: job.payload,
     last_error: job.last_error,
@@ -502,14 +514,75 @@ function publicJob(job: Record<string, unknown>) {
   };
 }
 
+function mergeCoupangTasks(
+  rawTasks: Array<Record<string, unknown>>,
+  metricDate: string,
+) {
+  const merged: Array<Record<string, unknown>> = [];
+  const coupangByAccount = new Map<string, Record<string, unknown>>();
+  for (const task of rawTasks) {
+    const provider = String(task.provider);
+    if (provider === "coupang_sales" || provider === "coupang_visits") {
+      const acct = String(task.account);
+      if (!coupangByAccount.has(acct)) {
+        coupangByAccount.set(acct, {
+          ...task,
+          provider: "coupang",
+          missing_fields_by_product: [],
+          _sub_providers: [],
+        });
+      }
+      const dest = coupangByAccount.get(acct)!;
+      (dest._sub_providers as string[]).push(provider);
+      for (
+        const mfp of (task.missing_fields_by_product as Array<
+          Record<string, unknown>
+        >)
+      ) {
+        const existing =
+          (dest.missing_fields_by_product as Array<Record<string, unknown>>)
+            .find((p) => p.product_slug === mfp.product_slug);
+        if (existing) {
+          existing.missing_fields = [
+            ...new Set([
+              ...(existing.missing_fields as string[]),
+              ...(mfp.missing_fields as string[]),
+            ]),
+          ];
+        } else {
+          (dest.missing_fields_by_product as Array<Record<string, unknown>>)
+            .push({ ...mfp });
+        }
+      }
+    } else {
+      merged.push(task);
+    }
+  }
+  merged.push(...coupangByAccount.values());
+  return merged;
+}
+
+function buildReadyKeys(
+  rawTasks: Array<Record<string, unknown>>,
+  metricDate: string,
+) {
+  const keys = new Set<string>();
+  for (const task of rawTasks) {
+    if (providerReadyAt(String(task.provider), metricDate)) {
+      const dbProvider = String(task.provider).startsWith("coupang")
+        ? "coupang"
+        : String(task.provider);
+      keys.add(`${dbProvider}:${task.account}`);
+    }
+  }
+  return keys;
+}
+
 async function syncJobs(supabase: any, metricDate: string) {
   const data = await loadData(supabase, metricDate);
-  const missingTasks = deriveMissingTasks(data.metricsBySlug, metricDate);
-  const readyKeys = new Set(
-    missingTasks
-      .filter((task) => providerReadyAt(task.provider, metricDate))
-      .map((task) => `${task.provider}:${task.account}`),
-  );
+  const rawMissingTasks = deriveMissingTasks(data.metricsBySlug, metricDate);
+  const readyKeys = buildReadyKeys(rawMissingTasks, metricDate);
+  const missingTasks = mergeCoupangTasks(rawMissingTasks, metricDate);
   const { data: existingRows, error: existingError } = await supabase
     .from("marketing_bridge_jobs")
     .select("*")
@@ -604,7 +677,7 @@ async function syncJobs(supabase: any, metricDate: string) {
         ]
         : []),
       "쿠팡 비밀번호 변경 화면에서는 변경하지 않는다. 같은 세션에서 즐겨찾기 또는 주소창으로 https://wing.coupang.com 을 연 뒤 판매분석 페이지로 돌아간다.",
-      "쿠팡 job은 전일 방문자 데이터가 확정되는 12:40 KST 이후에만 처리한다.",
+      "쿠팡 매출(주문·revenue)은 09:30 KST부터 처리하고 방문수는 생략한다. 방문자·전환율은 12:40 KST 이후에 처리한다.",
       "스마트스토어 주문·매출도 Grok 수집 대상이며 상품결제건수와 판매수량을 구분한다.",
       "jobs만 즉시 처리하고 blocked_jobs는 오류 원인을 해결하기 전 반복 claim하지 않는다.",
     ],
@@ -777,10 +850,13 @@ async function submitJob(supabase: any, body: Record<string, unknown>) {
     body.source_totals,
     body.unmapped,
   );
+  const salesOnly = job.provider === "coupang" &&
+    isCoupangSalesOnly(normalized);
   const submission = {
     metrics: normalized.metrics,
     source_totals: normalized.source_totals,
     unmapped: "unmapped" in normalized ? normalized.unmapped || [] : [],
+    sales_only: salesOnly,
   };
   const hash = await submissionHash(submission);
   if (job.provider === "smartstore") {
@@ -795,7 +871,7 @@ async function submitJob(supabase: any, body: Record<string, unknown>) {
     );
     if (salesError) throw new Error(salesError.message);
   }
-  if (job.provider === "coupang") {
+  if (job.provider === "coupang" && !salesOnly) {
     for (const rawMetric of normalized.metrics) {
       const metric = rawMetric as Record<string, any>;
       const wingVisits = Number(metric.wing.visits) || 0;
