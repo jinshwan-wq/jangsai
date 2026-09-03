@@ -1,0 +1,16 @@
+{
+  "name": "jangsAI",
+  "terminals": [
+    {
+      "name": "web",
+      "command": "python3 -m http.server 8000",
+      "description": "Serves the static jangsAI app (index.html, css/, js/) at http://localhost:8000. The app connects to the hosted Supabase backend from the browser."
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}
