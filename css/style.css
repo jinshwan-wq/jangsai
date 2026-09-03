@@ -4183,3 +4183,23 @@ textarea.form-input {
     .overview-product-row .col-rev strong { font-size: 0.76rem; }
     .overview-top-bar { flex-direction: column; align-items: flex-start; }
 }
+
+/* --- 이상사항 (Notables) --- */
+.overview-section-notables {
+    background: rgba(251, 191, 36, 0.06);
+    border: 1px solid rgba(251, 191, 36, 0.15);
+}
+.overview-section-notables .overview-section-label { color: #fbbf24; }
+
+.overview-notables-list {
+    margin: 0;
+    padding: 0 0 0 1.1em;
+    list-style: disc;
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+
+.overview-notables-list li + li {
+    margin-top: 2px;
+}

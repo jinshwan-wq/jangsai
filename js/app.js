@@ -2269,6 +2269,187 @@ function renderMarketingComparisonMatrix(metricDate) {
     </section>`;
 }
 
+function computeOverviewNotables(expectedDate) {
+    const prevDate = shiftMetricDate(expectedDate, -1);
+    const bullets = [];
+    const products = state.marketingProducts;
+    const fmtDate = d => `${d.slice(5).replace('-', '/')}`;
+    const fmtWon = v => new Intl.NumberFormat('ko-KR').format(Math.round(v));
+
+    const getMetric = (pid, date) => getProductMetricOnDate(pid, date);
+
+    const recentMetrics = (pid, date, days) => {
+        const rows = [];
+        for (let i = 1; i <= days; i++) {
+            const d = shiftMetricDate(date, -i);
+            const m = getMetric(pid, d);
+            if (m) rows.push(m);
+        }
+        return rows;
+    };
+
+    const avg7 = (pid, date, key, getter) => {
+        const rows = recentMetrics(pid, date, 7);
+        if (!rows.length) return null;
+        const vals = rows.map(m => getter ? getter(m) : nullableMetricNumber(m[key])).filter(v => v !== null);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+
+    const getBrandMetric = (brand, date) =>
+        state.marketingBrandMetrics.find(m => m.brand === brand && m.metric_date === date) || null;
+
+    const classifyAdType = creative => {
+        const title = String(creative.title || '').toLowerCase();
+        const adId = String(creative.ad_id || '').toLowerCase();
+        if (title.includes('파컨') || adId.startsWith('grp-a001-03')) return '파컨';
+        if (title.includes('파워링크') || adId.startsWith('grp-a001-01') || adId.startsWith('nad-a001-01')) return '파워링크';
+        if (title.includes('쇼핑') || adId.startsWith('grp-a001-02')) return '쇼핑CPC';
+        return null;
+    };
+
+    const getPaidCreativesForProduct = (brand, date, slug) => {
+        const bm = getBrandMetric(brand, date);
+        const creatives = bm?.source_details?.naver_ad_spend?.paid_creatives;
+        if (!Array.isArray(creatives)) return [];
+        return creatives.filter(c => c.product_slug === slug);
+    };
+
+    const buildTypeBreakdown = creatives => {
+        const totals = {};
+        for (const c of creatives) {
+            const type = classifyAdType(c);
+            if (type) totals[type] = (totals[type] || 0) + metricNumber(c.spend);
+        }
+        const parts = [];
+        for (const t of ['파컨', '파워링크', '쇼핑CPC']) {
+            if (totals[t] > 0) parts.push(`${t} ${fmtWon(totals[t])}`);
+        }
+        return parts.length ? parts.join(' · ') : null;
+    };
+
+    for (const product of products) {
+        const cur = getMetric(product.id, expectedDate);
+        const prev = getMetric(product.id, prevDate);
+
+        const curSpend = cur ? nullableMetricNumber(cur.ad_spend) : null;
+        const prevSpend = prev ? nullableMetricNumber(prev.ad_spend) : null;
+        const avg7Spend = avg7(product.id, expectedDate, 'ad_spend', null);
+
+        let spendFlagged = false;
+        if (curSpend === null && prevSpend === null) {
+            // both uncollected — skip
+        } else if (curSpend === null) {
+            // today uncollected — skip (미수집 only if needed)
+        } else if (prevSpend !== null) {
+            if (prevSpend === 0 && curSpend > 0) spendFlagged = true;
+            else if (prevSpend > 0 && curSpend === 0) spendFlagged = true;
+            else if (prevSpend > 0 && curSpend >= prevSpend * 1.8) spendFlagged = true;
+            else if (prevSpend > 0 && curSpend <= prevSpend * 0.4) spendFlagged = true;
+        } else if (avg7Spend !== null) {
+            if (avg7Spend === 0 && curSpend > 0) spendFlagged = true;
+            else if (avg7Spend > 0 && curSpend === 0) spendFlagged = true;
+            else if (avg7Spend > 0 && curSpend >= avg7Spend * 2) spendFlagged = true;
+        }
+
+        if (spendFlagged && bullets.length < 5) {
+            const prevLabel = prevSpend !== null ? `${fmtWon(prevSpend)}원` : '미수집';
+            const curLabel = `${fmtWon(curSpend)}원`;
+            let line = `${product.name} 광고비 ${fmtDate(prevDate)} ${prevLabel} → ${fmtDate(expectedDate)} ${curLabel}.`;
+            const creatives = getPaidCreativesForProduct(product.brand, expectedDate, product.slug);
+            const breakdown = buildTypeBreakdown(creatives);
+            if (breakdown) line += ` ${breakdown}.`;
+            bullets.push(line);
+        }
+
+        if (bullets.length >= 5) break;
+
+        const curC24Rev = cur ? nullableMetricNumber(cur.cafe24_revenue) : null;
+        const prevC24Rev = prev ? nullableMetricNumber(prev.cafe24_revenue) : null;
+        const curC24Ord = cur ? nullableMetricNumber(cur.cafe24_orders) : null;
+        const prevC24Ord = prev ? nullableMetricNumber(prev.cafe24_orders) : null;
+        if (
+            curC24Rev !== null && prevC24Rev !== null && prevC24Rev > 0 &&
+            curC24Ord !== null && prevC24Ord !== null && prevC24Ord > 0
+        ) {
+            const revRatio = curC24Rev / prevC24Rev;
+            const ordRatio = curC24Ord / prevC24Ord;
+            if ((revRatio >= 1.5 || revRatio <= 0.5) && Math.abs(ordRatio - 1) < 0.3) {
+                if (bullets.length < 5) {
+                    const dir = revRatio >= 1.5 ? '증가' : '감소';
+                    bullets.push(`${product.name} 자사몰 주문수 유사하나 매출 ${dir}. 구성 변화 (옵션수량 미수집).`);
+                }
+            }
+        }
+    }
+
+    if (bullets.length < 5) {
+        for (const product of products) {
+            if (bullets.length >= 5) break;
+            const cur = getMetric(product.id, expectedDate);
+            const prev = getMetric(product.id, prevDate);
+
+            const channels = [
+                { key: 'cafe24_revenue', label: '자사몰 매출', won: true },
+                { key: 'smartstore_revenue', label: '스스 매출', won: true },
+                { key: 'cafe24_visits', label: '자사몰 유입', won: false },
+                { key: 'smartstore_visits', label: '스스 유입', won: false },
+            ];
+
+            const cpCurRev = cur ? completeCoupangValue(cur, 'revenue') : null;
+            const cpPrevRev = prev ? completeCoupangValue(prev, 'revenue') : null;
+            if (cpCurRev !== null && cpPrevRev !== null && cpPrevRev > 0) {
+                const ratio = cpCurRev / cpPrevRev;
+                if ((ratio >= 2 || ratio <= 0.3) && bullets.length < 5) {
+                    const dir = ratio >= 2 ? '급증' : '급감';
+                    bullets.push(`${product.name} 쿠팡 매출 ${fmtDate(prevDate)} ${fmtWon(cpPrevRev)}원 → ${fmtDate(expectedDate)} ${fmtWon(cpCurRev)}원 (${dir}).`);
+                }
+            }
+
+            const cpCurVis = cur ? completeCoupangValue(cur, 'visits') : null;
+            const cpPrevVis = prev ? completeCoupangValue(prev, 'visits') : null;
+            if (cpCurVis !== null && cpPrevVis !== null && cpPrevVis > 0) {
+                const ratio = cpCurVis / cpPrevVis;
+                if ((ratio >= 2 || ratio <= 0.3) && bullets.length < 5) {
+                    const dir = ratio >= 2 ? '급증' : '급감';
+                    bullets.push(`${product.name} 쿠팡 유입 ${fmtDate(prevDate)} ${fmtWon(cpPrevVis)} → ${fmtDate(expectedDate)} ${fmtWon(cpCurVis)} (${dir}).`);
+                }
+            }
+
+            for (const ch of channels) {
+                if (bullets.length >= 5) break;
+                const curVal = cur ? nullableMetricNumber(cur[ch.key]) : null;
+                const prevVal = prev ? nullableMetricNumber(prev[ch.key]) : null;
+                if (curVal === null || prevVal === null || prevVal === 0) continue;
+                const ratio = curVal / prevVal;
+                if (ratio >= 2 || ratio <= 0.3) {
+                    const dir = ratio >= 2 ? '급증' : '급감';
+                    const unit = ch.won ? '원' : '';
+                    bullets.push(`${product.name} ${ch.label} ${fmtDate(prevDate)} ${fmtWon(prevVal)}${unit} → ${fmtDate(expectedDate)} ${fmtWon(curVal)}${unit} (${dir}).`);
+                }
+            }
+        }
+    }
+
+    if (bullets.length < 5) {
+        for (const product of products) {
+            if (bullets.length >= 5) break;
+            const cur = getMetric(product.id, expectedDate);
+            const prev = getMetric(product.id, prevDate);
+            const avg7Rev = avg7(product.id, expectedDate, null, m => getComparisonRevenue(m));
+            const curRev = cur ? getComparisonRevenue(cur) : null;
+            if (curRev !== null && avg7Rev !== null && avg7Rev > 0) {
+                const ratio = curRev / avg7Rev;
+                if ((ratio >= 2 || ratio <= 0.4) && bullets.length < 5) {
+                    const dir = ratio >= 2 ? '7일 평균 대비 급증' : '7일 평균 대비 급감';
+                    bullets.push(`${product.name} 총매출 ${dir} (평균 ${fmtWon(avg7Rev)}원 → ${fmtWon(curRev)}원).`);
+                }
+            }
+        }
+    }
+
+    return bullets.length ? bullets.slice(0, 5) : ['이상 없음'];
+}
+
 function renderOverviewDashboardView() {
     const expectedDate = kstDateString(-1);
     const previousDate = shiftMetricDate(expectedDate, -1);
@@ -2402,6 +2583,15 @@ function renderOverviewDashboardView() {
                 <span class="col-detail">${safeSum(productSummaries.map(p=>p.ssRev)) !== null ? formatWon(safeSum(productSummaries.map(p=>p.ssRev))) : ''}</span>
                 <span class="col-detail">${safeSum(productSummaries.map(p=>p.cpRev)) !== null ? formatWon(safeSum(productSummaries.map(p=>p.cpRev))) : ''}</span>
             </div>
+        </section>
+
+        <section class="overview-section overview-section-notables">
+            <div class="overview-section-label"><i class="ri-error-warning-line"></i> 이상사항</div>
+            <ul class="overview-notables-list">
+                ${computeOverviewNotables(expectedDate).map(b =>
+                    `<li>${escapeHtml(b)}</li>`
+                ).join('')}
+            </ul>
         </section>
     </main>`;
 }
